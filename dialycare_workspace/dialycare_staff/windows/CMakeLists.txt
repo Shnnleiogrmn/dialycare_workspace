@@ -55,6 +55,16 @@ add_subdirectory("runner")
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
+# Reuse an extracted Firebase SDK even when its download archive was cleaned up.
+# Keep an explicitly configured SDK directory under the developer's control.
+set(DIALYCARE_FIREBASE_CACHE "${CMAKE_BINARY_DIR}/extracted/firebase_cpp_sdk_windows")
+if(NOT DEFINED ENV{FIREBASE_CPP_SDK_DIR}
+   AND EXISTS "${DIALYCARE_FIREBASE_CACHE}/include/firebase/version.h"
+   AND EXISTS "${DIALYCARE_FIREBASE_CACHE}/libs/windows/VS2019/MD/x64/Debug/firebase_app.lib"
+   AND EXISTS "${DIALYCARE_FIREBASE_CACHE}/libs/windows/VS2019/MD/x64/Release/firebase_app.lib")
+  set(ENV{FIREBASE_CPP_SDK_DIR} "${DIALYCARE_FIREBASE_CACHE}")
+endif()
+
 include(flutter/generated_plugins.cmake)
 
 
@@ -106,3 +116,4 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+

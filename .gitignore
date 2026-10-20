@@ -1,0 +1,108 @@
+# DialyCare workspace: retain source, assets, manifests and Firebase client config.
+# Flutter / Dart
+.dart_tool/
+.pub/
+.pub-cache/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+coverage/
+.widget_preview/
+
+# Backend dependencies and tooling caches
+node_modules/
+.firebase/
+.cache/
+__pycache__/
+*.pyc
+.gradle/
+.cxx/
+ephemeral/
+Pods/
+.symlinks/
+
+# Temporary files and generated evidence (keep local copies)
+tmp/
+temp/
+*.log
+logs/
+generated_reports/
+reports/generated/
+/dialycare_workspace/dialycare_staff/verification/
+/dialycare_workspace/dialycare_mobile/verification/
+/mobile-doctor.txt
+/notification-analyze.txt
+/VERIFICATION.md
+/dialycare_workspace/dialycare_staff/*.txt
+/dialycare_workspace/dialycare_mobile/*.txt
+/dialycare_workspace/core_shared/*.txt
+/dialycare_workspace/backend/*.txt
+/dialycare_workspace/backend/functions/*-tests.txt
+/dialycare_workspace/backend/functions/audit.json
+/dialycare_workspace/backend/*REPORT*.md
+/dialycare_workspace/backend/*_STATUS.md
+/dialycare_workspace/backend/*_VERIFICATION_*.md
+# One-off cleanup contains exact historical verification account identifiers.
+/dialycare_workspace/backend/cleanup-interruption-auth-fixtures.cjs
+
+# Database exports and local snapshots (not models or synthetic seed source)
+firestore_export/
+firestore-export/
+firebase-export-*/
+database-dumps/
+database-exports/
+*.overall_export_metadata
+
+# OS and personal IDE state
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.iml
+*.ipr
+*.iws
+*.swp
+*.suo
+*.user
+# Retain shared editor tasks, launch profiles, extensions and settings if present.
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Local SDK paths and secrets; examples may be committed after review.
+local.properties
+.env
+.env.*
+!.env.example
+service-account*.json
+firebase-admin*.json
+credentials*.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+key.properties
+
+# Generated distributions and native debug output
+*.apk
+*.aab
+*.exe
+*.dll
+*.pdb
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.obj
+*.o
+*.class
+
+# Deliberately do NOT ignore firebase_options.dart, google-services.json,
+# GoogleService-Info.plist, firebase.json, .firebaserc, rules or indexes.

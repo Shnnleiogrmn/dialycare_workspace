@@ -1,0 +1,332 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function account() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function active() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && account().disabled == false &&
+        (!('activationId' in account()) ||
+          (get(/databases/$(database)/documents/accountBindings/$(account().role + '_' + account().recipientId)).data.uid == request.auth.uid &&
+           get(/databases/$(database)/documents/accountBindings/$(account().role + '_' + account().recipientId)).data.accountStatus == 'active'));
+    }
+    function staff() { return active() && account().role in ['staff','admin'] && account().accountStatus == 'active'; }
+    function centerAdmin() { return staff() && account().role == 'admin'; }
+    function activePatient(pid) { return get(/databases/$(database)/documents/patients/$(pid)).data.get('recordStatus', 'active') != 'archived'; }
+    function activePatientAfter(pid) { return getAfter(/databases/$(database)/documents/patients/$(pid)).data.get('recordStatus', 'active') != 'archived'; }
+    function knownRecipient(d) {
+      return d.role in ['patient','relative'] && activePatient(d.patientId) && exists(/databases/$(database)/documents/patientProfiles/$(d.patientId)) &&
+        ((d.role == 'patient' && d.recipientId == d.patientId) ||
+          (d.role == 'relative' && get(/databases/$(database)/documents/patientRelativeLinks/$(d.recipientId + '_' + d.patientId)).data.active == true));
+    }
+    function pendingInvitation(inv, code) {
+      let binding = get(/databases/$(database)/documents/accountBindings/$(inv.role + '_' + inv.recipientId)).data;
+      return inv.mode == 'temporaryPinV1' && knownRecipient(inv) && inv.revoked == false && inv.usedBy == null && inv.expiresAt > request.time &&
+        binding.activationId == code && binding.uid == null && binding.accountStatus == 'activationPending';
+    }
+    function validActivation(d) {
+      let inv = get(/databases/$(database)/documents/invitations/$(d.activationId)).data;
+      return signedIn() && pendingInvitation(inv, d.activationId) &&
+        request.auth.token.email.lower() == inv.get('publicId', d.recipientId).lower() + '@' + d.role + '.dialycare.invalid' &&
+        inv.role == d.role && inv.patientId == d.patientId && inv.recipientId == d.recipientId;
+    }
+    function matchingUser(d) {
+      let u = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return u.activationId == d.activationId && u.role == d.role && u.patientId == d.patientId && u.recipientId == d.recipientId &&
+        u.disabled == false && u.accountStatus == 'active' && u.activatedAt == request.time;
+    }
+    function linked(pid) {
+      return active() && account().patientId == pid &&
+        exists(/databases/$(database)/documents/patientProfiles/$(pid)) &&
+        ((account().role == 'patient' && account().recipientId == pid) ||
+         (account().role == 'relative' &&
+          get(/databases/$(database)/documents/patientRelativeLinks/$(account().recipientId + '_' + pid)).data.active == true));
+    }
+    function recipient(d) {
+      return linked(account().patientId) && d.recipientKey ==
+        account().role + ':' + account().recipientId + ':' + account().patientId;
+    }
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || staff());
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.keys().hasOnly([
+        'role','patientId','recipientId','disabled','accountStatus','activationId','activatedAt']) &&
+        validAcceptance(uid, request.resource.data.role) && validActivation(request.resource.data) && request.resource.data.disabled == false &&
+        request.resource.data.accountStatus == 'active' && request.resource.data.activatedAt == request.time &&
+        getAfter(/databases/$(database)/documents/accountBindings/$(request.resource.data.role + '_' + request.resource.data.recipientId)).data.uid == uid &&
+        getAfter(/databases/$(database)/documents/invitations/$(request.resource.data.activationId)).data.usedBy == uid;
+      // Staff/Admin roles, account transfers and Auth administration remain trusted operations.
+      allow update, delete: if false;
+    }
+    match /accountBindings/{key} {
+      allow read: if staff() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if staff() && pendingBinding(key);
+      allow update: if (staff() &&
+        ((resource.data.uid == null && resource.data.accountStatus in ['notActivated','activationPending'] && pendingBinding(key)) ||
+         (resource.data.uid == null && resource.data.accountStatus == 'activationPending' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus','activationId']) && request.resource.data.accountStatus == 'notActivated' && request.resource.data.activationId == null) ||
+         (resource.data.uid != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus']) &&
+          request.resource.data.accountStatus in ['active','disabled']))) ||
+        (signedIn() && request.resource.data.keys().hasOnly(['uid','role','patientId','recipientId','accountStatus','activationId','activatedAt']) &&
+         key == request.resource.data.role + '_' + request.resource.data.recipientId && validActivation(request.resource.data) &&
+         request.resource.data.uid == request.auth.uid && request.resource.data.accountStatus == 'active' &&
+         request.resource.data.activatedAt == request.time && matchingUser(request.resource.data) &&
+         getAfter(/databases/$(database)/documents/invitations/$(request.resource.data.activationId)).data.usedBy == request.auth.uid);
+      allow delete: if false;
+      function pendingBinding(key) {
+        let d=request.resource.data;
+        return d.keys().hasOnly(['uid','role','patientId','recipientId','accountStatus','activationId','activatedAt']) &&
+          key == d.role + '_' + d.recipientId && knownRecipient(d) && d.uid == null && d.accountStatus == 'activationPending' && d.activatedAt == null &&
+          getAfter(/databases/$(database)/documents/invitations/$(d.activationId)).data.recipientId == d.recipientId &&
+          getAfter(/databases/$(database)/documents/invitations/$(d.activationId)).data.role == d.role;
+      }
+    }
+    match /invitations/{code} {
+      allow list: if staff();
+      // Prototype: only the authenticated holder of the PIN-derived lookup can
+      // read a current pending identity. No invitation listing or care data follows.
+      // Production short-PIN verification needs trusted per-record attempt limits.
+      allow get: if staff() || (signedIn() && pendingInvitation(resource.data, code));
+      allow create: if staff() && code.matches('^[a-f0-9]{64}$') && request.resource.data.keys().hasOnly([
+        'mode','role','patientId','recipientId','publicId','patientPublicId','displayName','expiresAt','issuedBy','usedBy','usedAt','revoked']) &&
+        (!('patientPublicId' in request.resource.data) || request.resource.data.patientPublicId == get(/databases/$(database)/documents/patients/$(request.resource.data.patientId)).data.get('publicId', request.resource.data.patientId)) &&
+        (!('publicId' in request.resource.data) || request.resource.data.publicId ==
+          (request.resource.data.role == 'patient'
+            ? get(/databases/$(database)/documents/patients/$(request.resource.data.recipientId)).data.get('publicId', request.resource.data.recipientId)
+            : get(/databases/$(database)/documents/relatives/$(request.resource.data.recipientId)).data.get('publicId', request.resource.data.recipientId))) &&
+        request.resource.data.mode == 'temporaryPinV1' && knownRecipient(request.resource.data) && request.resource.data.displayName is string &&
+        request.resource.data.issuedBy == request.auth.uid && request.resource.data.usedBy == null && request.resource.data.usedAt == null &&
+        request.resource.data.revoked == false && request.resource.data.expiresAt > request.time &&
+        request.resource.data.expiresAt <= request.time + duration.value(25,'h') &&
+        getAfter(/databases/$(database)/documents/accountBindings/$(request.resource.data.role + '_' + request.resource.data.recipientId)).data.activationId == code;
+      allow update: if (staff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revoked']) && request.resource.data.revoked == true) ||
+        (signedIn() && validActivation({'activationId':code,'role':resource.data.role,'patientId':resource.data.patientId,'recipientId':resource.data.recipientId}) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy','usedAt']) && request.resource.data.usedBy == request.auth.uid &&
+          request.resource.data.usedAt == request.time && matchingUser({'activationId':code,'role':resource.data.role,'patientId':resource.data.patientId,'recipientId':resource.data.recipientId}));
+      allow delete: if false;
+    }
+    function validAcceptance(uid, role) {
+      let d = getAfter(/databases/$(database)/documents/policyAcceptances/$(uid)).data;
+      return d.uid == uid && d.role == role && d.termsVersion == 'capstone-2026-10-19-v1' &&
+        d.privacyNoticeVersion == 'capstone-2026-10-19-v1' && d.termsAcceptedAt == request.time && d.privacyAcknowledgedAt == request.time;
+    }
+    match /policyAcceptances/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || staff());
+      allow create: if signedIn() && request.auth.uid == uid &&
+        request.resource.data.keys().hasOnly(['uid','role','termsVersion','termsAcceptedAt','privacyNoticeVersion','privacyAcknowledgedAt']) &&
+        validAcceptance(uid, request.resource.data.role) && request.resource.data.role in ['patient','relative'] &&
+        getAfter(/databases/$(database)/documents/users/$(uid)).data.role == request.resource.data.role &&
+        getAfter(/databases/$(database)/documents/users/$(uid)).data.activatedAt == request.time;
+      allow update, delete: if false;
+    }
+    match /auditEvents/{eventId} {
+      allow read: if staff();
+      allow create: if signedIn() && request.resource.data.keys().hasOnly(['actorUid','actorRole','action','resourceType','resourceId','timestamp','outcome']) &&
+        request.resource.data.actorUid == request.auth.uid && request.resource.data.timestamp == request.time && request.resource.data.outcome == 'success' &&
+        request.resource.data.resourceId is string && request.resource.data.resourceId.matches('^[a-zA-Z0-9_-]{1,160}$') &&
+        request.resource.data.resourceType in ['patient','relative','relativeLink','session','notification','settings'] &&
+        ((staff() && request.resource.data.actorRole == account().role && request.resource.data.action in [
+          'patientCreated','patientUpdated','patientArchived','patientRestored','relativeCreated','relativeUpdated','relativeLinked','relativeUnlinked',
+          'mobileAccessCreated','pinRegenerated','activationCancelled','mobileAccessDisabled','mobileAccessRestored',
+          'sessionCreated','sessionEdited','sessionStatusChanged','sessionRemoved','reminderCreated','centerSettingsChanged']) ||
+         (request.resource.data.action == 'accountActivated' && request.resource.data.actorRole in ['patient','relative'] &&
+          request.resource.data.actorRole == getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role &&
+          request.resource.data.resourceType == request.resource.data.actorRole &&
+          request.resource.data.resourceId == getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.recipientId &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.activatedAt == request.time));
+      allow update, delete: if false;
+    }
+    match /settings/center {
+      allow read: if staff();
+      allow create, update: if centerAdmin() && request.resource.data.keys().hasOnly(['name','contact','address','updatedBy','updatedAt']) &&
+        request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 120 &&
+        request.resource.data.contact is string && request.resource.data.contact.size() <= 40 &&
+        request.resource.data.address is string && request.resource.data.address.size() <= 240 &&
+        request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+    match /clinical/state { allow read, write: if staff(); }
+    function validPublicId(role, internalId, publicId) {
+      let reservation = getAfter(/databases/$(database)/documents/publicIds/$(publicId)).data;
+      return publicId is string && publicId != 'DC-000000' && publicId != 'R-000000' && publicId.matches(role == 'patient' ? '^DC-[0-9]{6}$' : '^R-[0-9]{6}$') &&
+        reservation.role == role && reservation.internalId == internalId && reservation.publicId == publicId;
+    }
+    function publicIdUpdate(role, internalId) {
+      return (!('publicId' in resource.data) && !('publicId' in request.resource.data)) ||
+        (validPublicId(role, internalId, request.resource.data.publicId) &&
+         (!('publicId' in resource.data) || request.resource.data.publicId == resource.data.publicId));
+    }
+    match /publicIds/{publicId} {
+      allow read: if staff();
+      allow create: if staff() && request.resource.data.keys().hasOnly(['role','internalId','publicId']) &&
+        request.resource.data.publicId == publicId && publicId != 'DC-000000' && publicId != 'R-000000' &&
+        ((request.resource.data.role == 'patient' && publicId.matches('^DC-[0-9]{6}$') &&
+          getAfter(/databases/$(database)/documents/patients/$(request.resource.data.internalId)).data.publicId == publicId) ||
+         (request.resource.data.role == 'relative' && publicId.matches('^R-[0-9]{6}$') &&
+          getAfter(/databases/$(database)/documents/relatives/$(request.resource.data.internalId)).data.publicId == publicId));
+      allow update, delete: if false;
+    }
+    match /idCounters/center {
+      allow get: if staff();
+      allow create, update: if staff() && request.resource.data.keys().hasOnly(['nextPatientNumber','nextRelativeNumber']) &&
+        request.resource.data.nextPatientNumber is int && request.resource.data.nextRelativeNumber is int &&
+        request.resource.data.nextPatientNumber >= 1 && request.resource.data.nextPatientNumber <= 1000000 &&
+        request.resource.data.nextRelativeNumber >= 1 && request.resource.data.nextRelativeNumber <= 1000000 &&
+        (!exists(/databases/$(database)/documents/idCounters/center) ||
+          (request.resource.data.nextPatientNumber >= resource.data.nextPatientNumber && request.resource.data.nextRelativeNumber >= resource.data.nextRelativeNumber));
+      allow delete: if false;
+    }
+    match /patients/{id} {
+      allow read: if staff();
+      allow create: if staff() && validPublicId('patient', id, request.resource.data.publicId) && request.resource.data.get('recordStatus','active') == 'active';
+      allow update: if staff() && publicIdUpdate('patient', id) && request.resource.data.get('recordStatus','active') in ['active','archived'] &&
+        ((request.resource.data.get('recordStatus','active') == resource.data.get('recordStatus','active') && request.resource.data.get('archivedAt',null) == resource.data.get('archivedAt',null) && request.resource.data.get('archivedBy',null) == resource.data.get('archivedBy',null)) ||
+         (request.resource.data.recordStatus == 'archived' && request.resource.data.archivedAt == request.time && request.resource.data.archivedBy == request.auth.uid) ||
+         (request.resource.data.recordStatus == 'active' && request.resource.data.archivedAt == null && request.resource.data.archivedBy == null));
+      allow delete: if false;
+    }
+    match /patientProfiles/{id} {
+      allow get: if staff() || linked(id);
+      allow list: if staff();
+      allow create, update: if staff() && request.resource.data.keys().hasOnly(['id','name','publicId','syncVersion','scheduleGroup']) &&
+        (!('scheduleGroup' in request.resource.data) || request.resource.data.scheduleGroup in ['MWF','TTHS']) &&
+        (!('publicId' in request.resource.data) || request.resource.data.publicId == getAfter(/databases/$(database)/documents/patients/$(id)).data.publicId) &&
+        request.resource.data.get('syncVersion','') is string && request.resource.data.get('syncVersion','').size() <= 80 &&
+        request.resource.data.id == id && request.resource.data.name is string;
+      allow delete: if false;
+    }
+    match /relatives/{id} {
+      allow read: if staff() || (active() && account().role == 'relative' && account().recipientId == id && linked(account().patientId));
+      allow create: if staff() && relativeIdentityFields(request.resource.data) && validPublicId('relative', id, request.resource.data.publicId);
+      allow update: if staff() && relativeIdentityFields(request.resource.data) && publicIdUpdate('relative', id);
+      allow delete: if false;
+    }
+    function relativeIdentityFields(d) {
+      return d.keys().hasOnly(['id','publicId','name','contact','address']) &&
+        d.id is string && d.name is string && d.get('contact','') is string && d.get('address','') is string;
+    }
+    match /patientAccountProfiles/{id} {
+      allow get: if staff() || (active() && account().role == 'patient' && linked(id));
+      allow list: if staff();
+      allow create, update: if staff() && request.resource.data.keys().hasOnly(['id','contact','relativeName','relationship','gender']) &&
+        request.resource.data.id == id && request.resource.data.contact is string && request.resource.data.contact.size() <= 40 &&
+        request.resource.data.relativeName is string && request.resource.data.relativeName.size() <= 160 &&
+        request.resource.data.get('gender','') is string && request.resource.data.get('gender','').size() <= 40 &&
+        request.resource.data.relationship is string && request.resource.data.relationship.size() <= 80;
+      allow delete: if false;
+    }
+    match /patientRelativeLinks/{id} {
+      allow read: if staff() || (active() && account().role == 'relative' &&
+        resource.data.relativeId == account().recipientId && resource.data.patientId == account().patientId);
+      allow create, update: if staff() && request.resource.data.keys().hasOnly(['relativeId','patientId','relationship','active']) &&
+        id == request.resource.data.relativeId + '_' + request.resource.data.patientId && request.resource.data.active is bool;
+      allow delete: if staff();
+    }
+    match /batches/{id} {
+      allow read: if staff();
+      allow create, update: if centerAdmin() && request.resource.data.keys().hasOnly(['id','name','startMinute','endMinute','capacity','active']) &&
+        request.resource.data.id == id && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 40 &&
+        request.resource.data.startMinute is int && request.resource.data.startMinute >= 0 && request.resource.data.startMinute < 1440 &&
+        request.resource.data.endMinute is int && request.resource.data.endMinute > request.resource.data.startMinute && request.resource.data.endMinute <= 1440 &&
+        request.resource.data.active is bool && (request.resource.data.capacity == null || (request.resource.data.capacity is int && request.resource.data.capacity > 0 && request.resource.data.capacity <= 1000));
+      allow delete: if false;
+    }
+    match /sessions/{id} {
+      allow read: if staff() || linked(resource.data.patientId);
+      allow create, update: if staff() && (exists(/databases/$(database)/documents/sessions/$(id)) || activePatientAfter(request.resource.data.patientId)) && request.resource.data.keys().hasOnly([
+        'id','patientId','start','room','batch','status','progress','revision','expectedEnd',
+        'plannedDurationMinutes','actualStartedAt','completedAt','scheduleGroup','endedAt','pauseSequence','pauseIntervals']) &&
+        request.resource.data.id == id && request.resource.data.patientId is string &&
+        request.resource.data.start is string && request.resource.data.room is string && request.resource.data.batch is string &&
+        request.resource.data.status in ['Pending','In Progress','Paused','Ended Early','Completed','Ready for Pick Up','Missed','Waiting','Cancelled'] &&
+        (!('scheduleGroup' in request.resource.data) || request.resource.data.scheduleGroup in ['MWF','TTHS']) &&
+        (!('plannedDurationMinutes' in request.resource.data) || (request.resource.data.plannedDurationMinutes is int && request.resource.data.plannedDurationMinutes >= 30 && request.resource.data.plannedDurationMinutes <= 720)) &&
+        validSessionClock(id, request.resource.data);
+      allow delete: if false;
+    }
+    function validSessionClock(id, d) {
+      let existsBefore = exists(/databases/$(database)/documents/sessions/$(id));
+      let old = existsBefore ? get(/databases/$(database)/documents/sessions/$(id)).data : {};
+      let started = old.get('actualStartedAt', null);
+      let completed = old.get('completedAt', null);
+      return validSessionTransition(id, old, d, existsBefore) && validPauseClock(old, d) &&
+        (existsBefore || (d.status == 'Pending' && d.get('actualStartedAt',null) == null && d.get('completedAt',null) == null && d.get('endedAt',null) == null)) &&
+        (!existsBefore || d.patientId == old.patientId) &&
+        (started != null ? d.get('actualStartedAt',null) == started :
+          (d.status == 'In Progress' ? (d.get('actualStartedAt',null) == request.time && 'plannedDurationMinutes' in d) : d.get('actualStartedAt',null) == null)) &&
+        (completed != null ? d.get('completedAt',null) == completed :
+          (d.status == 'Completed' && old.get('status','') != 'Completed' ?
+            (old.get('status','') in ['In Progress','Waiting'] && d.get('completedAt',null) == request.time) : d.get('completedAt',null) == null)) &&
+        (old.get('endedAt',null) != null ? d.get('endedAt',null) == old.endedAt :
+          (d.status in ['Ended Early','Cancelled'] ? d.get('endedAt',null) == request.time : d.get('endedAt',null) == null)) &&
+        (completed == null || d.status in ['Completed','Ready for Pick Up']) &&
+        (started == null || d.status != 'Pending') &&
+        (d.status != 'Ready for Pick Up' || old.get('status','') in ['Completed','Ready for Pick Up']) &&
+        (started == null || (d.start == old.start && d.get('plannedDurationMinutes',null) == old.get('plannedDurationMinutes',null)));
+    }
+    function allowedSessionTransition(from, to) {
+      return from == to ||
+        (from == 'Pending' && to in ['In Progress','Missed','Cancelled']) ||
+        (from == 'In Progress' && to in ['Paused','Completed','Ended Early']) ||
+        (from == 'Paused' && to in ['In Progress','Ended Early']) ||
+        (from == 'Waiting' && to in ['In Progress','Completed','Ended Early']) ||
+        (from == 'Completed' && to == 'Ready for Pick Up') ||
+        (from == 'Missed' && to == 'Pending');
+    }
+    function validSessionTransition(id, old, d, existed) {
+      return !existed || (allowedSessionTransition(old.status,d.status) &&
+        d.revision == old.get('revision',0) + 1 &&
+        (old.status == d.status || validEventAfter(id, old, d)));
+    }
+    function validEventAfter(id, old, d) {
+      let e = getAfter(/databases/$(database)/documents/sessionEvents/$(id + '_' + string(d.revision))).data;
+      return e.fromStatus == old.status && e.toStatus == d.status && e.patientId == d.patientId &&
+        e.timestamp == request.time && e.actorUid == request.auth.uid;
+    }
+    function validPauseClock(old, d) {
+      let before = old.get('pauseIntervals',{});
+      let after = d.get('pauseIntervals',{});
+      let n = old.get('pauseSequence',0);
+      let m = d.get('pauseSequence',0);
+      let pausing = d.status == 'Paused' && old.get('status','') != 'Paused';
+      let resuming = old.get('status','') == 'Paused' && d.status != 'Paused';
+      return after is map && m is int && m >= 0 && m <= 1000 &&
+        (pausing ? (m == n+1 && after.size() == before.size()+1 &&
+          after.diff(before).affectedKeys().hasOnly(['p'+string(m)]) &&
+          after['p'+string(m)].keys().hasOnly(['pausedAt']) &&
+          after['p'+string(m)].pausedAt == request.time) :
+        resuming ? (m == n && after.size() == before.size() &&
+          after.diff(before).affectedKeys().hasOnly(['p'+string(n)]) &&
+          after['p'+string(n)].keys().hasOnly(['pausedAt','resumedAt']) &&
+          after['p'+string(n)].pausedAt == before['p'+string(n)].pausedAt &&
+          after['p'+string(n)].resumedAt == request.time) : (m == n && after == before));
+    }
+    match /sessionEvents/{id} {
+      allow read: if staff();
+      allow create: if staff() && validSessionEvent(id,request.resource.data);
+      allow update, delete: if false;
+    }
+    function validSessionEvent(id,e) {
+      let after = getAfter(/databases/$(database)/documents/sessions/$(e.sessionId)).data;
+      let before = get(/databases/$(database)/documents/sessions/$(e.sessionId)).data;
+      return e.keys().hasOnly(['id','sessionId','patientId','revision','fromStatus','toStatus','type','actorUid','reasonCode','note','timestamp']) &&
+        e.id == id && id == e.sessionId+'_'+string(e.revision) && e.actorUid == request.auth.uid && e.timestamp == request.time &&
+        e.revision == after.revision && e.patientId == after.patientId && e.fromStatus == before.status && e.toStatus == after.status && e.fromStatus != e.toStatus &&
+        e.type == (e.toStatus == 'In Progress' ? (e.fromStatus == 'Paused' ? 'RESUME':'START') : e.toStatus == 'Paused' ? 'PAUSE' : e.toStatus == 'Completed' ? 'COMPLETE' : e.toStatus == 'Ended Early' ? 'END_EARLY' : e.toStatus == 'Cancelled' ? 'CANCEL' : 'STATUS') &&
+        e.note is string && e.note.size() <= 500 &&
+        (e.toStatus == 'Paused' ? e.reasonCode in ['equipment','patientCondition','assessment','access','temporary','other'] :
+          e.toStatus in ['Ended Early','Cancelled'] ? e.reasonCode in ['equipment','patientCondition','clinicalDecision','patientRequest','transfer','other'] : (e.reasonCode == '' && e.note == ''));
+    }
+    match /notifications/{id} {
+      allow read: if staff() || recipient(resource.data);
+      allow create: if staff() && activePatientAfter(request.resource.data.patientId) && request.resource.data.keys().hasOnly([
+        'id','eventId','patientId','recipientId','recipientType','recipientName','type','title','message',
+        'trigger','sessionId','createdAt','attempts','recipientKey','readAt','staffRead']) &&
+        request.resource.data.id == id && request.resource.data.createdAt == request.time && request.resource.data.readAt == null &&
+        request.resource.data.recipientType in ['patient','relative'] &&
+        request.resource.data.recipientKey == request.resource.data.recipientType + ':' + request.resource.data.recipientId + ':' + request.resource.data.patientId;
+      allow update: if (staff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attempts','staffRead'])) ||
+        (recipient(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']) &&
+          request.resource.data.readAt == request.time);
+      allow delete: if staff();
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

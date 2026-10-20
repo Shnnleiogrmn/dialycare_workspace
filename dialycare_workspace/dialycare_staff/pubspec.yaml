@@ -28,11 +28,20 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  core_shared:
+    path: ../core_shared
+  crypto: ^3.0.7
+  cupertino_icons: ^1.0.8
   firebase_core: ^4.15.0
   flutter:
     sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
 
 dev_dependencies:
+  http: ^1.6.0
+  integration_test:
+    sdk: flutter
   flutter_test:
     sdk: flutter
 
@@ -52,6 +61,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/images/auth-logo.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
@@ -83,3 +95,4 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+

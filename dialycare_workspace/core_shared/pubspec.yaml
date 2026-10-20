@@ -1,5 +1,5 @@
 name: core_shared
-description: "A new Flutter package project."
+description: "Shared DialyCare session models and authenticated backend client."
 version: 0.0.1
 homepage:
 
@@ -8,6 +8,8 @@ environment:
   flutter: ">=1.17.0"
 
 dependencies:
+  crypto: ^3.0.7
+  http: ^1.6.0
   flutter:
     sdk: flutter
 
@@ -21,6 +23,9 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
+  assets:
+    - assets/patient-avatar-male.png
+    - assets/patient-avatar-female.png
 
   # To add assets to your package, add an assets section, like this:
   # assets:
