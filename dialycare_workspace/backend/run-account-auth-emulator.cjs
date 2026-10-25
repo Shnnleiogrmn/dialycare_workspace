@@ -15,6 +15,17 @@ async function main() {
   const {getAuth} = devRequire('firebase-admin/auth');
   const app = initializeApp({projectId:project});
   const auth = getAuth(app);
+  // Warm the local Firestore database before Dart's normal 25-second request
+  // timeout starts. Cold emulator startup can exceed that on this laptop.
+  // The validated demo-project/loopback guard above applies to this fixture too.
+  const warmup = await fetch(`http://127.0.0.1:8089/v1/projects/${project}/databases/(default)/documents:commit`, {
+    method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer owner'},
+    body:JSON.stringify({writes:[{update:{
+      name:`projects/${project}/databases/(default)/documents/users/staff`,
+      fields:{role:{stringValue:'staff'},disabled:{booleanValue:false},accountStatus:{stringValue:'active'}},
+    }}]}), signal:AbortSignal.timeout(90000),
+  });
+  assert.equal(warmup.status,200,'Local Firestore fixture initialization failed.');
   const base = 'http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1';
   const tokens = {};
   async function api(action, body) {

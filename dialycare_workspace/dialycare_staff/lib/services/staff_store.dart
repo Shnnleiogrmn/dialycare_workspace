@@ -6,12 +6,17 @@ import 'package:core_shared/core_shared.dart'
         MobileAccount,
         BackendException,
         sequentialCenterId,
+        yearlyPatientId,
+        patientIdYear,
+        patientIdSequence,
         centerIdLabel,
         validPlannedDuration,
         sessionTransitionAllowed,
         PauseInterval,
         pauseReasonCodes,
         endReasonCodes;
+import 'package:core_shared/core_shared.dart'
+    show ConcernService, HistoryService;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
@@ -45,6 +50,9 @@ class StaffStore extends ChangeNotifier {
   StaffStore({
     this.memoryOnly = false,
     this.shared = false,
+    this.concerns,
+    this.history,
+    this.clock = DateTime.now,
     DateTime? now,
     this.readData,
     this.issueActivation,
@@ -128,6 +136,8 @@ class StaffStore extends ChangeNotifier {
   List<NotificationEvent> notificationEvents = [];
   final Set<String> _activeDeliveries = {};
   final bool memoryOnly, shared;
+  final ConcernService? concerns;
+  final HistoryService? history;
   final Future<Map<String, dynamic>> Function(
     String role,
     String patientId,
@@ -184,7 +194,9 @@ class StaffStore extends ChangeNotifier {
     }
     final formatted = centerIdLabel(
       internalId,
-      internalId.startsWith('DC-') ? 'DC-' : 'R-',
+      (internalId.startsWith('DC-') || internalId.startsWith('DP-'))
+          ? 'DC-'
+          : 'R-',
     );
     return formatted == 'Not assigned' ? 'Historical record' : formatted;
   }
@@ -217,6 +229,8 @@ class StaffStore extends ChangeNotifier {
   bool signedIn = true;
   String? loadError;
   Future<void> _writes = Future.value();
+  final DateTime Function() clock;
+  Map<String, int> _patientNumbersByYear = {};
   int _nextPatientNumber = 1;
   int _nextRelativeNumber = 1;
   List<Map<String, dynamic>> batchConfigurations = [];
@@ -286,14 +300,14 @@ class StaffStore extends ChangeNotifier {
   ];
   Patient patientFor(String id) => patients.firstWhere((p) => p.id == id);
   String get nextPatientId {
-    var next = _nextPatientNumber;
+    final year = clock().toLocal().year;
+    var next = _patientNumbersByYear['$year'] ?? 1;
     for (final p in patients) {
-      final n = int.tryParse(p.displayId.replaceFirst('DC-', ''));
-      if (n != null && n >= next) {
-        next = n + 1;
+      if (patientIdYear(p.displayId) == year) {
+        next = max(next, patientIdSequence(p.displayId)! + 1);
       }
     }
-    return sequentialCenterId('DC-', next);
+    return yearlyPatientId(year, next);
   }
 
   Map<String, dynamic> _snapshot() => {
@@ -310,6 +324,7 @@ class StaffStore extends ChangeNotifier {
         .map((e) => Map<String, dynamic>.from(e))
         .toList(),
     'publicIdLabels': publicIdLabels,
+    'patientNumbersByYear': Map<String, int>.from(_patientNumbersByYear),
     'nextPatientNumber': _nextPatientNumber,
     'nextRelativeNumber': _nextRelativeNumber,
     'deliveryHistory': deliveryHistory.map((d) => d.toJson()).toList(),
@@ -379,6 +394,9 @@ class StaffStore extends ChangeNotifier {
     sessions = s;
     notifications = n;
     staffName = j['staffName'] as String? ?? 'Yrxyxy';
+    _patientNumbersByYear = (j['patientNumbersByYear'] as Map? ?? {}).map(
+      (k, v) => MapEntry(k.toString(), v as int),
+    );
     _nextPatientNumber = j['nextPatientNumber'] as int? ?? 1;
     _nextRelativeNumber = j['nextRelativeNumber'] as int? ?? 1;
     for (final patient in patients) {
@@ -451,6 +469,11 @@ class StaffStore extends ChangeNotifier {
         patient = _preparePatient(patient);
         final i = patients.indexWhere((p) => p.id == patient.id);
         if (i < 0) {
+          final year = patientIdYear(patient.displayId);
+          if (year != null) {
+            _patientNumbersByYear['$year'] =
+                patientIdSequence(patient.displayId)! + 1;
+          }
           final number = int.tryParse(
             patient.displayId.replaceFirst('DC-', ''),
           );

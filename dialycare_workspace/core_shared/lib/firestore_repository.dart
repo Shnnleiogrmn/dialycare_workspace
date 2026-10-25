@@ -19,9 +19,28 @@ class FirestoreRepository extends BackendClient {
     this.project = 'dialycare-backend-3f0ed',
     this.emulatorHost,
     this.onFailure,
+    this.clock = DateTime.now,
   }) : client = client ?? http.Client();
   final String Function() uid;
   final String project;
+  final DateTime Function() clock;
+  Map<String, dynamic>? _patientYearCounterDoc;
+  int? _patientCounterYear;
+  bool _patientYearCounterAvailable = true;
+  bool _patientIdMigrationRequired = false;
+
+  Future<void> _loadPatientYearCounter(int year) async {
+    _patientCounterYear = year;
+    try {
+      _patientYearCounterDoc = await get('idCounters/patients-$year');
+      _patientYearCounterAvailable = true;
+    } on BackendException catch (failure) {
+      if (failure.statusCode != 403) rethrow;
+      // Preserve existing operations while an older Rules deployment is active.
+      _patientYearCounterDoc = null;
+      _patientYearCounterAvailable = false;
+    }
+  }
 
   /// Explicit local integration test option; production always defaults to HTTPS.
   final String? emulatorHost;
@@ -415,7 +434,9 @@ class FirestoreRepository extends BackendClient {
         _cachedStaffRevision == before?['updateTime'];
     final rows = reuse
         ? [
-            ..._cachedStaffRows!.take(6),
+            ..._cachedStaffRows!.take(4),
+            await query('notifications'),
+            _cachedStaffRows![5],
             await query('accountBindings'),
             _cachedStaffRows![7],
           ]
@@ -496,6 +517,14 @@ class FirestoreRepository extends BackendClient {
       }
     }
     _counterValues = Map<String, dynamic>.from(counters);
+    await _loadPatientYearCounter(clock().toLocal().year);
+    _patientIdMigrationRequired = rows[0]
+        .map(data)
+        .any(
+          (p) =>
+              !RegExp(r'^DP-[1-9][0-9]{3}-[0-9]{3}$')
+                  .hasMatch((p['publicId'] ?? p['id'] ?? '').toString()),
+        );
     if (meta.containsKey('bundle')) {
       throw const BackendException(
         'Legacy cloud snapshot found. An administrator must migrate it before using Spark.',
@@ -534,6 +563,11 @@ class FirestoreRepository extends BackendClient {
       'bundle': {
         'version': 2,
         'workspaceVersion': _revisionTime ?? 'initial',
+        'patientNumbersByYear': {
+          '$_patientCounterYear': _patientYearCounterDoc == null
+              ? 1
+              : data(_patientYearCounterDoc!)['nextPatientNumber'],
+        },
         'nextPatientNumber':
             counters['nextPatientNumber'] ?? meta['nextPatientNumber'] ?? 1,
         'nextRelativeNumber':
@@ -556,7 +590,10 @@ class FirestoreRepository extends BackendClient {
                 value['publicId'] ??
                 centerIdLabel(
                   value['id'] as String,
-                  (value['id'] as String).startsWith('DC-') ? 'DC-' : 'R-',
+                  ((value['id'] as String).startsWith('DC-') ||
+                          (value['id'] as String).startsWith('DP-'))
+                      ? 'DC-'
+                      : 'R-',
                 ),
           for (final link in rows[2].map(data))
             '${link['relativeId']}_${link['patientId']}':
@@ -579,6 +616,14 @@ class FirestoreRepository extends BackendClient {
         ? _counterValues
         : data(_idCounterDoc!);
     var nextPatient = counters['nextPatientNumber'] as int? ?? 1;
+    final registrationYear = clock().toLocal().year;
+    if (_patientCounterYear != registrationYear) {
+      await _loadPatientYearCounter(registrationYear);
+    }
+    var nextYearPatient = _patientYearCounterDoc == null
+        ? 1
+        : data(_patientYearCounterDoc!)['nextPatientNumber'] as int;
+    var allocatedYearPatient = false;
     var nextRelative = counters['nextRelativeNumber'] as int? ?? 1;
     final reservations = <Map<String, dynamic>>[];
     String assignId(
@@ -604,12 +649,27 @@ class FirestoreRepository extends BackendClient {
       final legacy = previous != null && role == 'patient'
           ? centerIdLabel(internalId, prefix)
           : 'Not assigned';
+      if (role == 'patient' && previous != null && legacy == 'Not assigned') {
+        throw const BackendException(
+          'This legacy Patient has no issued ID. An administrator must review its original registration before assigning one.',
+          409,
+        );
+      }
+      if (role == 'patient' && !_patientYearCounterAvailable) {
+        throw const BackendException(
+          'New Patient registration requires the reviewed yearly-ID Firestore Rules update. Contact your administrator.',
+        );
+      }
+      if (role == 'patient' && _patientIdMigrationRequired) {
+        throw const BackendException(
+          'New Patient registration is paused until the reviewed canonical Patient ID migration is approved and completed. Existing records remain available.',
+        );
+      }
       final publicId = legacy != 'Not assigned'
           ? legacy
-          : sequentialCenterId(
-              prefix,
-              role == 'patient' ? nextPatient : nextRelative,
-            );
+          : role == 'patient'
+          ? yearlyPatientId(registrationYear, nextYearPatient)
+          : sequentialCenterId(prefix, nextRelative);
       if (value['publicId'] != null &&
           value['publicId'] != '' &&
           value['publicId'] != publicId) {
@@ -618,17 +678,29 @@ class FirestoreRepository extends BackendClient {
           409,
         );
       }
-      final number = int.parse(publicId.substring(prefix.length));
-      if (role == 'patient') {
-        nextPatient = max(nextPatient, number + 1);
-      } else {
-        nextRelative = max(nextRelative, number + 1);
+      if (role == 'patient' && patientIdYear(publicId) != null) {
+        nextYearPatient++;
+        allocatedYearPatient = true;
+      } else if (role == 'patient') {
+        nextPatient = max(
+          nextPatient,
+          int.parse(publicId.substring(prefix.length)) + 1,
+        );
+      } else if (role == 'relative') {
+        nextRelative = max(
+          nextRelative,
+          int.parse(publicId.substring(prefix.length)) + 1,
+        );
       }
       reservations.add({
         'update': document('publicIds/$publicId', {
           'role': role,
           'internalId': internalId,
           'publicId': publicId,
+          if (role == 'patient' && patientIdYear(publicId) != null) ...{
+            'year': registrationYear,
+            'sequence': patientIdSequence(publicId),
+          },
         }),
         'currentDocument': {'exists': false},
       });
@@ -808,7 +880,19 @@ class FirestoreRepository extends BackendClient {
       }
     }
     final writes = <Map<String, dynamic>>[];
-    int? counterWriteIndex;
+    int? counterWriteIndex, patientYearWriteIndex;
+    if (allocatedYearPatient) {
+      patientYearWriteIndex = writes.length;
+      writes.add({
+        'update': document('idCounters/patients-$registrationYear', {
+          'year': registrationYear,
+          'nextPatientNumber': nextYearPatient,
+        }),
+        'currentDocument': _patientYearCounterDoc == null
+            ? {'exists': false}
+            : {'updateTime': _patientYearCounterDoc!['updateTime']},
+      });
+    }
     if (reservations.isNotEmpty || _idCounterDoc == null) {
       writes.addAll(reservations);
       counterWriteIndex = writes.length;
@@ -890,6 +974,44 @@ class FirestoreRepository extends BackendClient {
           );
         }
       } else if (entry.key.startsWith('sessions/')) {
+        if (previous == null ||
+            ['start', 'batch', 'room', 'plannedDurationMinutes'].any(
+              (field) =>
+                  (field == 'start'
+                      ? DateTime.tryParse(previous[field]?.toString() ?? '')
+                      : canonical(previous[field])) !=
+                  (field == 'start'
+                      ? DateTime.tryParse(entry.value[field]?.toString() ?? '')
+                      : canonical(entry.value[field])),
+            )) {
+          Map<String, dynamic> schedule(Map<String, dynamic> v) => {
+            for (final field in [
+              'start',
+              'batch',
+              'room',
+              'plannedDurationMinutes',
+            ])
+              field: v[field],
+          };
+          final historyId = List.generate(
+            16,
+            (_) =>
+                Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0'),
+          ).join();
+          writes.add({
+            'update': document('scheduleHistory/$historyId', {
+              'id': historyId,
+              'patientId': entry.value['patientId'],
+              'sessionId': id,
+              'before': previous == null ? null : schedule(previous),
+              'after': schedule(entry.value),
+            }),
+            'currentDocument': {'exists': false},
+            'updateTransforms': [
+              {'fieldPath': 'createdAt', 'setToServerValue': 'REQUEST_TIME'},
+            ],
+          });
+        }
         if (previous == null ||
             previous['start'] != entry.value['start'] ||
             previous['plannedDurationMinutes'] !=
@@ -1213,6 +1335,17 @@ class FirestoreRepository extends BackendClient {
             (result['writeResults'] as List)[counterWriteIndex]['updateTime'],
       };
     }
+    if (patientYearWriteIndex != null) {
+      _patientYearCounterDoc = {
+        ...document('idCounters/patients-$registrationYear', {
+          'year': registrationYear,
+          'nextPatientNumber': nextYearPatient,
+        }),
+        'updateTime':
+            (result['writeResults']
+                as List)[patientYearWriteIndex]['updateTime'],
+      };
+    }
     _cachedStaffRows = null;
     return {
       'revision': DateTime.now().microsecondsSinceEpoch,
@@ -1263,6 +1396,16 @@ class FirestoreRepository extends BackendClient {
         _mobileCacheAt != null &&
         DateTime.now().difference(_mobileCacheAt!) <
             const Duration(minutes: 5)) {
+      final updates =
+          (await query(
+            'notifications',
+            field: 'recipientKey',
+            equals: '$role:$rid:$pid',
+          )).map(data).toList()..sort(
+            (a, b) =>
+                (b['createdAt'] as String).compareTo(a['createdAt'] as String),
+          );
+      _cachedMobile!['notifications'] = updates;
       return jsonDecode(jsonEncode(_cachedMobile)) as Map<String, dynamic>;
     }
     final relative = role == 'relative' ? await get('relatives/$rid') : null;

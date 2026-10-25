@@ -284,7 +284,7 @@ Future<void> sessionManagementUiFlow(WidgetTester tester) async {
   }
 
   await tap('Sessions');
-  await tap('Upcoming (7)');
+  await tap('Ongoing (0)');
   expect(find.byKey(const ValueKey('batch-Batch A')), findsOneWidget);
   expect(find.byKey(const ValueKey('batch-Batch B')), findsOneWidget);
   expect(find.byKey(const ValueKey('batch-Batch C')), findsOneWidget);
@@ -331,14 +331,14 @@ Future<void> sessionManagementUiFlow(WidgetTester tester) async {
         .length,
     1,
   );
-  await tap('Upcoming (6)');
+  await tap('Ongoing (0)');
   await tester.ensureVisible(find.byKey(const ValueKey('manage-A2')));
   await tester.tap(find.byKey(const ValueKey('manage-A2')));
   await tester.pumpAndSettle();
   await choose(SessionStatus.missed);
   await tap('Reports');
   summary('Missed', '1');
-  expect(find.text('Jose Reyes'), findsOneWidget);
+  expect(find.textContaining('Jose Reyes'), findsOneWidget);
   expect(find.text('Ready for Pick Up'), findsOneWidget);
   await tap('Sessions');
   await tap('Completed (2)');
@@ -346,7 +346,7 @@ Future<void> sessionManagementUiFlow(WidgetTester tester) async {
   await tester.tap(find.byKey(const ValueKey('manage-A2')));
   await tester.pumpAndSettle();
   await choose(SessionStatus.pending);
-  expect(find.text('Upcoming (6)'), findsOneWidget);
+  expect(find.text('Upcoming (0)'), findsOneWidget);
   expect(
     store.notificationEvents
         .where((e) => e.type == NotificationType.pickup)

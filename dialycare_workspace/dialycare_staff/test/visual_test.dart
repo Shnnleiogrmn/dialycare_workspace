@@ -117,7 +117,7 @@ void main() {
     await tap('Cancel');
     await tap('Sessions');
     await capture('sessions-ongoing');
-    await tap('Upcoming (2)');
+    await tap('Ongoing (2)');
     await capture('sessions-upcoming');
     await tap('Completed (4)');
     await capture('sessions-completed');

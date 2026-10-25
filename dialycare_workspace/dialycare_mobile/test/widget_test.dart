@@ -103,7 +103,7 @@ void main() {
         await tester.drag(find.byType(RefreshIndicator), const Offset(0, 300));
         await tester.pumpAndSettle();
         expect(api.fetches, greaterThan(beforeRefresh));
-        await tester.tap(find.text('Schedule').last);
+        await tester.tap(find.text('View Schedule'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('All'));
         await tester.pumpAndSettle();
@@ -113,12 +113,16 @@ void main() {
         expect(find.text('Dialysis Session'), findsOneWidget);
         await tester.tap(find.text('Close'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Notifications').last);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Open notifications'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Ready for Pick Up').last);
         await tester.pumpAndSettle();
         expect(api.reads, ['N-1']);
         await tester.tap(find.text('Close'));
+        await tester.pumpAndSettle();
+        await tester.pageBack();
         await tester.pumpAndSettle();
         await tester.tap(find.text('More'));
         await tester.pumpAndSettle();
@@ -248,10 +252,16 @@ void main() {
     await s.refresh();
     await tester.pumpAndSettle();
     await capture('patient-home');
-    for (final label in ['Schedule', 'Notifications', 'More']) {
-      await tester.tap(find.text(label).last);
-      await capture('patient-${label.toLowerCase()}');
-    }
+    await tester.tap(find.text('View Schedule'));
+    await capture('patient-schedule');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Open notifications'));
+    await capture('patient-notifications');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('More').last);
+    await capture('patient-more');
     api.role = 'relative';
     await s.refresh(validateRole: false);
     await tester.tap(find.text('Home').last);

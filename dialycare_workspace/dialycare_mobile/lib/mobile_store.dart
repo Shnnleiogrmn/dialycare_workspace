@@ -10,7 +10,13 @@ import 'package:core_shared/core_shared.dart';
 import 'firebase_options.dart';
 
 class MobileStore extends ChangeNotifier {
-  MobileStore({this.testApi});
+  MobileStore({this.testApi, this.testConcerns, this.testHistory});
+  final HistoryService? testHistory;
+  late final HistoryService history =
+      testHistory ?? FirestoreHistoryService(repository);
+  final ConcernService? testConcerns;
+  late final ConcernService concerns =
+      testConcerns ?? FirestoreConcernService(repository);
   bool _disposed = false;
   void _notify() {
     if (!_disposed) notifyListeners();
@@ -84,10 +90,28 @@ class MobileStore extends ChangeNotifier {
           'The care center connection is unavailable.',
         );
       }
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: accountEmail(role, id),
-        password: password,
-      );
+      FirebaseAuthException? credentialFailure;
+      for (final candidate in patientLoginIds(role, id)) {
+        try {
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: accountEmail(role, candidate),
+            password: password,
+          );
+          credentialFailure = null;
+          break;
+        } on FirebaseAuthException catch (failure) {
+          if (![
+            'invalid-credential',
+            'invalid-login-credentials',
+            'user-not-found',
+            'wrong-password',
+          ].contains(failure.code)) {
+            rethrow;
+          }
+          credentialFailure = failure;
+        }
+      }
+      if (credentialFailure != null) throw credentialFailure;
       try {
         await refresh(rethrowError: true);
       } catch (_) {
@@ -124,7 +148,11 @@ class MobileStore extends ChangeNotifier {
   }
 
   Future<void> beginActivation(String id, String pin) => action(() async {
-    final code = pinInvitationId(role, id, pin);
+    pinInvitationId(
+      role,
+      id,
+      pin,
+    ); // Validate before creating a helper identity.
     if (!ready) await initialize();
     if (!ready) {
       throw const BackendException(
@@ -147,11 +175,25 @@ class MobileStore extends ChangeNotifier {
     _temporaryUid = created.user!.uid;
     activationPending = true;
     try {
-      activationPreview = await repository.verifyActivation(
-        code: code,
-        role: role,
-        recipientId: id.trim(),
-      );
+      BackendException? verificationFailure;
+      for (final candidate in patientLoginIds(role, id)) {
+        try {
+          activationPreview = await repository.verifyActivation(
+            code: pinInvitationId(role, candidate, pin),
+            role: role,
+            recipientId: id.trim(),
+          );
+          verificationFailure = null;
+          break;
+        } on BackendException catch (failure) {
+          if (failure.statusCode != null &&
+              ![400, 403, 404].contains(failure.statusCode)) {
+            rethrow;
+          }
+          verificationFailure = failure;
+        }
+      }
+      if (verificationFailure != null) throw verificationFailure;
     } catch (_) {
       await cancelActivation();
       rethrow;

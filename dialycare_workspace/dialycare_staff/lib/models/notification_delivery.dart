@@ -49,9 +49,11 @@ class AppRegistration {
         );
 }
 
-enum RecipientType { patient, relative }
+enum RecipientType { patient, relative, staff }
 
 enum NotificationType {
+  concernUpdate,
+  concernSubmitted,
   scheduleReminder,
   sessionStarted,
   sessionPaused,
@@ -145,10 +147,15 @@ class NotificationDelivery {
   final DateTime createdAt;
   final List<DeliveryAttempt> attempts;
   final bool read;
-  DeliveryStatus get status =>
-      attempts.isEmpty ? DeliveryStatus.pending : attempts.last.status;
-  DeliveryChannel? get channel =>
-      attempts.isEmpty ? null : attempts.last.channel;
+  bool get _persistedConcern =>
+      type == NotificationType.concernUpdate ||
+      type == NotificationType.concernSubmitted;
+  DeliveryStatus get status => attempts.isEmpty
+      ? (_persistedConcern ? DeliveryStatus.available : DeliveryStatus.pending)
+      : attempts.last.status;
+  DeliveryChannel? get channel => attempts.isEmpty
+      ? (_persistedConcern ? DeliveryChannel.inApp : null)
+      : attempts.last.channel;
   String get statusLabel => switch (status) {
     DeliveryStatus.available => 'Available in app',
     DeliveryStatus.pending => 'Pending',

@@ -1,5 +1,8 @@
 import '../../models/session.dart';
 
+import 'package:core_shared/core_shared.dart'
+    show ActivityHistoryPage, CallbackHistoryService, sessionHistoryItems;
+
 import 'package:flutter/material.dart';
 
 import '../../services/staff_store.dart';
@@ -19,6 +22,7 @@ class ReportsScreen extends StatefulWidget {
 class _ReportsScreenState extends State<ReportsScreen> {
   late DateTimeRange range;
   String batch = 'All Batches';
+  bool history = false;
   @override
   void initState() {
     super.initState();
@@ -31,6 +35,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (history) {
+      return ActivityHistoryPage(
+        staff: true,
+        onBack: () => setState(() => history = false),
+        service:
+            widget.store.history ??
+            CallbackHistoryService(
+              () async => sessionHistoryItems(widget.store.sessions, (id) {
+                final p = widget.store.patientFor(id);
+                return '${p.name} • ${p.displayId}';
+              }),
+            ),
+      );
+    }
     final end = DateTime(range.end.year, range.end.month, range.end.day + 1);
     final all = widget.store.sessions
         .where(
@@ -48,7 +66,36 @@ class _ReportsScreenState extends State<ReportsScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const PageHeader('Reports'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(28, 24, 28, 22),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Reports',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: StaffTheme.navy,
+                  ),
+                ),
+              ),
+              Tooltip(
+                message: 'Open recorded activity history',
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: StaffTheme.navy,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: () => setState(() => history = true),
+                  icon: const Icon(Icons.history, size: 20),
+                  label: const Text('History'),
+                ),
+              ),
+            ],
+          ),
+        ),
         PageBody(
           children: [
             Wrap(
@@ -126,7 +173,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 for (final s in rows)
                   [
                     Text(
-                      widget.store.patientFor(s.patientId).name,
+                      '${widget.store.patientFor(s.patientId).name}\n${widget.store.publicIdFor(s.patientId)}',
                       textAlign: TextAlign.center,
                     ),
                     Text(s.room),

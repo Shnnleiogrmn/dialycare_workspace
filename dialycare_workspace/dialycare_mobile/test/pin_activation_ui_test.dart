@@ -12,7 +12,7 @@ class PinScreenStore extends MobileStore {
     activationPreview = {
       'displayName': role == 'patient' ? 'Anna Marie' : 'Robert',
       'patientId': 'DC-001',
-      'patientPublicId': 'DC-000001',
+      'patientPublicId': role == 'patient' ? id : 'DC-000001',
       'publicId': id,
       'recipientId': id,
     };
@@ -31,9 +31,13 @@ class PinScreenStore extends MobileStore {
 }
 
 void main() {
-  for (final role in ['patient', 'relative']) {
+  for (final (role, loginId) in [
+    ('patient', 'DC-000001'),
+    ('patient', 'DP-2026-001'),
+    ('relative', 'R-000001'),
+  ]) {
     testWidgets(
-      '$role uses ID/PIN then password-only setup with read-only identity',
+      '$role $loginId uses ID/PIN then password-only setup with read-only identity',
       (tester) async {
         tester.view.physicalSize = const Size(390, 650);
         tester.view.devicePixelRatio = 1;
@@ -48,7 +52,7 @@ void main() {
         final label = role == 'patient' ? 'Patient ID' : 'Relative ID';
         await tester.enterText(
           find.widgetWithText(TextFormField, label),
-          role == 'patient' ? 'DC-000001' : 'R-000001',
+          loginId,
         );
         await tester.enterText(
           find.widgetWithText(TextFormField, 'Temporary PIN'),

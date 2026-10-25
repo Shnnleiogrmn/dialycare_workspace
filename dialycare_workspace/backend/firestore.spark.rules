@@ -145,7 +145,7 @@ service cloud.firestore {
     match /clinical/state { allow read, write: if staff(); }
     function validPublicId(role, internalId, publicId) {
       let reservation = getAfter(/databases/$(database)/documents/publicIds/$(publicId)).data;
-      return publicId is string && publicId != 'DC-000000' && publicId != 'R-000000' && publicId.matches(role == 'patient' ? '^DC-[0-9]{6}$' : '^R-[0-9]{6}$') &&
+      return publicId is string && publicId != 'DC-000000' && publicId != 'R-000000' && publicId.matches(role == 'patient' ? '^(DC-[0-9]{6}|DP-[1-9][0-9]{3}-[0-9]{3,4})$' : '^R-[0-9]{6}$') &&
         reservation.role == role && reservation.internalId == internalId && reservation.publicId == publicId;
     }
     function publicIdUpdate(role, internalId) {
@@ -155,19 +155,50 @@ service cloud.firestore {
     }
     match /publicIds/{publicId} {
       allow read: if staff();
-      allow create: if staff() && request.resource.data.keys().hasOnly(['role','internalId','publicId']) &&
+      allow create: if staff() && request.resource.data.keys().hasOnly(['role','internalId','publicId','year','sequence']) &&
         request.resource.data.publicId == publicId && publicId != 'DC-000000' && publicId != 'R-000000' &&
-        ((request.resource.data.role == 'patient' && publicId.matches('^DC-[0-9]{6}$') &&
+        ((request.resource.data.role == 'patient' &&
+          validYearReservation(publicId, request.resource.data) &&
           getAfter(/databases/$(database)/documents/patients/$(request.resource.data.internalId)).data.publicId == publicId) ||
          (request.resource.data.role == 'relative' && publicId.matches('^R-[0-9]{6}$') &&
           getAfter(/databases/$(database)/documents/relatives/$(request.resource.data.internalId)).data.publicId == publicId));
       allow update, delete: if false;
     }
+    // Yearly Patient counters share the existing collection. UTC +/- one day
+    // permits the actual local registration year at a New Year timezone boundary.
+    function currentRegistrationYear(year) {
+      return year == request.time.year() ||
+        year == (request.time + duration.value(1, 'd')).year() ||
+        year == (request.time - duration.value(1, 'd')).year();
+    }
+    function validYearReservation(publicId, d) {
+      let path = /databases/$(database)/documents/idCounters/$('patients-' + string(d.year));
+      let after = getAfter(path).data;
+      return d.year is int && currentRegistrationYear(d.year) &&
+        d.sequence is int && d.sequence >= 1 && d.sequence <= 999 &&
+        publicId.matches('^DP-[1-9][0-9]{3}-[0-9]{3}$') &&
+        publicId.matches('^DP-' + string(d.year) + '-0*' + string(d.sequence) + '$') &&
+        after.year == d.year && after.nextPatientNumber > d.sequence &&
+        (!exists(path) ? d.sequence >= 1 : d.sequence >= get(path).data.nextPatientNumber);
+    }
+    match /idCounters/{counterId} {
+      allow get: if staff() && counterId.matches('^patients-[1-9][0-9]{3}$');
+      allow create, update: if staff() &&
+        request.resource.data.keys().hasOnly(['year','nextPatientNumber']) &&
+        request.resource.data.year is int && currentRegistrationYear(request.resource.data.year) &&
+        counterId == 'patients-' + string(request.resource.data.year) &&
+        request.resource.data.nextPatientNumber is int &&
+        request.resource.data.nextPatientNumber >= 2 && request.resource.data.nextPatientNumber <= 1000 &&
+        (!exists(/databases/$(database)/documents/idCounters/$(counterId)) ||
+          (request.resource.data.year == resource.data.year &&
+           request.resource.data.nextPatientNumber > resource.data.nextPatientNumber));
+      allow delete: if false;
+    }
     match /idCounters/center {
       allow get: if staff();
       allow create, update: if staff() && request.resource.data.keys().hasOnly(['nextPatientNumber','nextRelativeNumber']) &&
         request.resource.data.nextPatientNumber is int && request.resource.data.nextRelativeNumber is int &&
-        request.resource.data.nextPatientNumber >= 1 && request.resource.data.nextPatientNumber <= 1000000 &&
+        request.resource.data.nextPatientNumber >= 1 && request.resource.data.nextPatientNumber <= 100000 &&
         request.resource.data.nextRelativeNumber >= 1 && request.resource.data.nextRelativeNumber <= 1000000 &&
         (!exists(/databases/$(database)/documents/idCounters/center) ||
           (request.resource.data.nextPatientNumber >= resource.data.nextPatientNumber && request.resource.data.nextRelativeNumber >= resource.data.nextRelativeNumber));
@@ -175,7 +206,7 @@ service cloud.firestore {
     }
     match /patients/{id} {
       allow read: if staff();
-      allow create: if staff() && validPublicId('patient', id, request.resource.data.publicId) && request.resource.data.get('recordStatus','active') == 'active';
+      allow create: if staff() && request.resource.data.publicId.matches('^DP-[1-9][0-9]{3}-[0-9]{3}$') && validPublicId('patient', id, request.resource.data.publicId) && request.resource.data.get('recordStatus','active') == 'active';
       allow update: if staff() && publicIdUpdate('patient', id) && request.resource.data.get('recordStatus','active') in ['active','archived'] &&
         ((request.resource.data.get('recordStatus','active') == resource.data.get('recordStatus','active') && request.resource.data.get('archivedAt',null) == resource.data.get('archivedAt',null) && request.resource.data.get('archivedBy',null) == resource.data.get('archivedBy',null)) ||
          (request.resource.data.recordStatus == 'archived' && request.resource.data.archivedAt == request.time && request.resource.data.archivedBy == request.auth.uid) ||
@@ -316,16 +347,98 @@ service cloud.firestore {
     }
     match /notifications/{id} {
       allow read: if staff() || recipient(resource.data);
-      allow create: if staff() && activePatientAfter(request.resource.data.patientId) && request.resource.data.keys().hasOnly([
+      allow create: if (staff() || concernSubmissionNotice(id, request.resource.data)) && activePatientAfter(request.resource.data.patientId) && request.resource.data.keys().hasOnly([
         'id','eventId','patientId','recipientId','recipientType','recipientName','type','title','message',
         'trigger','sessionId','createdAt','attempts','recipientKey','readAt','staffRead']) &&
         request.resource.data.id == id && request.resource.data.createdAt == request.time && request.resource.data.readAt == null &&
-        request.resource.data.recipientType in ['patient','relative'] &&
-        request.resource.data.recipientKey == request.resource.data.recipientType + ':' + request.resource.data.recipientId + ':' + request.resource.data.patientId;
+        ((request.resource.data.recipientType in ['patient','relative'] &&
+        request.resource.data.recipientKey == request.resource.data.recipientType + ':' + request.resource.data.recipientId + ':' + request.resource.data.patientId) ||
+        (request.resource.data.recipientType == 'staff' && request.resource.data.recipientId == 'staff' && request.resource.data.recipientKey == 'staff:all'));
       allow update: if (staff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attempts','staffRead'])) ||
         (recipient(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']) &&
           request.resource.data.readAt == request.time);
       allow delete: if staff();
+    }
+    function concernSubmissionNotice(id,d) {
+      let ticket = getAfter(/databases/$(database)/documents/feedbackConcerns/$(d.eventId.replace('concern_submitted_', ''))).data;
+      return concernOwner(ticket) && ticket.createdAt == request.time &&
+        id == 'concern_submitted_' + ticket.concernId && d.eventId == id && d.patientId == ticket.patientId &&
+        d.recipientType == 'staff' && d.recipientKey == 'staff:all' && d.recipientName == 'Staff' &&
+        d.type == 'concernSubmitted' && d.title == 'New Feedback & Concern' &&
+        d.message == 'New Feedback & Concern submitted. Open the inbox to review it.' &&
+        d.trigger == 'automatic' && d.sessionId == '' && d.attempts == [] && d.staffRead == false;
+    }
+    function scheduleSnapshot(d) {
+      return {'start':d.start,'batch':d.batch,'room':d.room,'plannedDurationMinutes':d.get('plannedDurationMinutes',null)};
+    }
+    match /scheduleHistory/{id} {
+      allow read: if staff() || (active() && linked(resource.data.patientId) && activePatient(resource.data.patientId));
+      allow create: if staff() && request.resource.data.keys().hasOnly(['id','patientId','sessionId','before','after','createdAt']) &&
+        request.resource.data.id == id && request.resource.data.createdAt == request.time &&
+        request.resource.data.patientId == getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.sessionId)).data.patientId &&
+        request.resource.data.after == scheduleSnapshot(getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.sessionId)).data) &&
+        (exists(/databases/$(database)/documents/sessions/$(request.resource.data.sessionId)) ?
+          request.resource.data.before == scheduleSnapshot(get(/databases/$(database)/documents/sessions/$(request.resource.data.sessionId)).data) :
+          request.resource.data.before == null) &&
+        request.resource.data.before != request.resource.data.after;
+      allow update, delete: if false;
+    }
+    function concernOwner(d) {
+      return active() && account().accountStatus == 'active' && knownRecipient(account()) &&
+        d.submittedByUid == request.auth.uid;
+    }
+    function concernStep(a,b) {
+      return (a == 'Submitted' && b == 'Under Review') ||
+        (a == 'Under Review' && b == 'Resolved') ||
+        (a == 'Resolved' && b == 'Closed');
+    }
+    match /feedbackConcerns/{id} {
+      allow read: if staff() || concernOwner(resource.data);
+      allow create: if concernOwner(request.resource.data) &&
+        request.resource.data.submittedByRole == account().role &&
+        request.resource.data.patientId == account().patientId &&
+        request.resource.data.relativeId == (account().role == 'relative' ? account().recipientId : null) &&
+        request.resource.data.keys().hasAll(['concernId','submittedByUid','submittedByRole','patientId','relativeId','concernType','relatedArea','subject','message','status','createdAt','updatedAt','resolvedAt','closedAt','revision','responseCount','lastResponseId','updatedBy']) &&
+        request.resource.data.keys().hasOnly(['concernId','submittedByUid','submittedByRole','patientId','relativeId','concernType','relatedArea','subject','message','status','createdAt','updatedAt','resolvedAt','closedAt','revision','responseCount','lastResponseId','updatedBy']) &&
+        id.matches('^FC-[A-F0-9]{20}$') && request.resource.data.concernId == id &&
+        request.resource.data.concernType in ['Feedback','Complaint','Service Concern','Application/System Issue','Schedule Concern','Other'] &&
+        request.resource.data.relatedArea in ['Schedule','Session','Notification','Account','Mobile Application','Staff/Service','Other'] &&
+        request.resource.data.subject is string && request.resource.data.subject.size() >= 1 && request.resource.data.subject.size() <= 120 &&
+        request.resource.data.subject.matches('.*[^\\s].*') &&
+        request.resource.data.message is string && request.resource.data.message.size() >= 1 && request.resource.data.message.size() <= 2000 &&
+        request.resource.data.message.matches('(?s).*[^\\s].*') &&
+        request.resource.data.status == 'Submitted' && request.resource.data.revision == 0 &&
+        request.resource.data.responseCount == 0 && request.resource.data.lastResponseId == '' &&
+        request.resource.data.resolvedAt == null && request.resource.data.closedAt == null &&
+        request.resource.data.updatedBy == request.auth.uid &&
+        request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+      allow update: if staff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status','updatedAt','updatedBy','revision','responseCount','lastResponseId','resolvedAt','closedAt']) &&
+        request.resource.data.updatedAt == request.time && request.resource.data.updatedBy == request.auth.uid &&
+        request.resource.data.revision == resource.data.revision + 1 &&
+        (concernStep(resource.data.status,request.resource.data.status) ||
+          (resource.data.status in ['Submitted','Under Review'] && request.resource.data.status == resource.data.status &&
+            request.resource.data.responseCount == resource.data.responseCount + 1)) &&
+        (request.resource.data.responseCount == resource.data.responseCount ?
+          request.resource.data.lastResponseId == resource.data.lastResponseId :
+          (resource.data.status in ['Submitted','Under Review'] &&
+           request.resource.data.responseCount == resource.data.responseCount + 1 &&
+           request.resource.data.lastResponseId == 'R-' + string(request.resource.data.revision) &&
+           getAfter(/databases/$(database)/documents/feedbackConcerns/$(id)/responses/$(request.resource.data.lastResponseId)).data.createdAt == request.time)) &&
+        request.resource.data.resolvedAt == (request.resource.data.status == 'Resolved' && resource.data.status != 'Resolved' ? request.time : resource.data.resolvedAt) &&
+        request.resource.data.closedAt == (request.resource.data.status == 'Closed' ? request.time : resource.data.closedAt);
+      allow delete: if false;
+      match /responses/{responseId} {
+        allow read: if staff() || concernOwner(get(/databases/$(database)/documents/feedbackConcerns/$(id)).data);
+        allow create: if staff() && request.resource.data.keys().hasOnly(['responseId','responderUid','responderRole','message','createdAt']) &&
+          request.resource.data.responseId == responseId && request.resource.data.responderUid == request.auth.uid &&
+          request.resource.data.responderRole == account().role && request.resource.data.createdAt == request.time &&
+          request.resource.data.message is string && request.resource.data.message.size() >= 1 && request.resource.data.message.size() <= 2000 &&
+          getAfter(/databases/$(database)/documents/feedbackConcerns/$(id)).data.lastResponseId == responseId &&
+          getAfter(/databases/$(database)/documents/feedbackConcerns/$(id)).data.responseCount == get(/databases/$(database)/documents/feedbackConcerns/$(id)).data.responseCount + 1 &&
+          getAfter(/databases/$(database)/documents/feedbackConcerns/$(id)).data.updatedBy == request.auth.uid;
+        allow update, delete: if false;
+      }
     }
     match /{document=**} { allow read, write: if false; }
   }

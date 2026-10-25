@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:core_shared/core_shared.dart' show FeedbackConcernsPage;
+
 import 'package:flutter/material.dart';
 
 import '../services/staff_store.dart';
@@ -72,6 +74,14 @@ class _StaffPortalState extends State<StaffPortal> {
         ),
         StaffPage.notifications => NotificationsScreen(store: store),
         StaffPage.reports => ReportsScreen(store: store),
+        StaffPage.concerns =>
+          store.concerns == null
+              ? const Center(
+                  child: Text(
+                    'Connect to the shared workspace to manage Feedback & Concerns.',
+                  ),
+                )
+              : FeedbackConcernsPage(service: store.concerns!, staff: true),
         StaffPage.settings => SettingsScreen(store: store),
       };
       return StaffShell(

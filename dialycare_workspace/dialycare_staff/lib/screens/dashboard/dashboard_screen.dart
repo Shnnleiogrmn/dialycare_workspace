@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:core_shared/core_shared.dart' show ScheduleGroup, PersonLabel;
+import 'package:core_shared/core_shared.dart' show PersonLabel;
 
 import '../../services/staff_store.dart';
 import '../../models/session.dart';
@@ -92,18 +92,7 @@ class DashboardScreen extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Chip(
-                label: Text(
-                  ScheduleGroup.forDay(now) == null
-                      ? 'No regular group today'
-                      : "Today's Group: ${ScheduleGroup.forDay(now)!.label}",
-                ),
-              ),
-            ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 24),
             SummaryGrid(
               children: [
                 SummaryCard(
@@ -163,6 +152,7 @@ class DashboardScreen extends StatelessWidget {
                           PersonLabel(
                             name: store.patientFor(s.patientId).name,
                             gender: store.patientFor(s.patientId).gender,
+                            subtitle: store.publicIdFor(s.patientId),
                           ),
                           Text(s.room),
                           Text(s.batch),

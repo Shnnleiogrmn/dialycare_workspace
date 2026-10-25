@@ -89,4 +89,45 @@ void main() {
     store.dispose();
     loaded.dispose();
   });
+  test(
+    'registration year counters persist, roll over, and preserve legacy IDs',
+    () async {
+      var date = DateTime(2026, 12, 31, 23, 59);
+      String? saved;
+      final store = StaffStore(
+        clock: () => date,
+        readData: () async => saved,
+        writeData: (s) async => saved = s,
+      );
+      final legacy = store.patients.first;
+      final legacyId = legacy.displayId;
+      Patient person(String id) => Patient(
+        id: id,
+        name: 'Synthetic Patient',
+        age: 30,
+        gender: 'Other',
+        contact: '',
+      );
+      expect(store.nextPatientId, 'DP-2026-001');
+      await store.savePatient(person(store.nextPatientId));
+      expect(store.nextPatientId, 'DP-2026-002');
+      date = DateTime(2027, 1, 1);
+      expect(store.nextPatientId, 'DP-2027-001');
+      await store.savePatient(person(store.nextPatientId));
+      final loaded = StaffStore(
+        clock: () => date,
+        readData: () async => saved,
+        writeData: (s) async => saved = s,
+      );
+      await loaded.load();
+      expect(loaded.nextPatientId, 'DP-2027-002');
+      await loaded.savePatient(loaded.patientFor('DP-2026-001'));
+      expect(loaded.patientFor('DP-2026-001').displayId, 'DP-2026-001');
+      expect(loaded.patientFor(legacy.id).displayId, legacyId);
+      await loaded.deletePatient('DP-2027-001');
+      expect(loaded.nextPatientId, 'DP-2027-002');
+      loaded.dispose();
+      store.dispose();
+    },
+  );
 }

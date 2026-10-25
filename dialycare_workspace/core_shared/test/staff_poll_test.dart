@@ -56,7 +56,7 @@ void main() {
     await repo.loadStaff(allowCached: true);
     expect(reads['patients'], 1);
     expect(reads['sessions'], 1);
-    expect(reads['notifications'], 1);
+    expect(reads['notifications'], 2);
     expect(reads['account'], 2);
     expect(reads['accountBindings'], 2);
     revision = '2026-10-20T00:01:00Z';

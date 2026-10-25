@@ -1,4 +1,5 @@
 import 'backend_client.dart';
+import 'account_policy.dart';
 import 'firestore_repository.dart';
 import 'pin_activation.dart';
 import 'governance.dart';
@@ -179,6 +180,7 @@ extension ActivationRepository on FirestoreRepository {
         value['role'] != role ||
         ![value['publicId'], value['recipientId']]
             .whereType<String>()
+            .expand((v) => patientLoginIds(role, v))
             .map((v) => v.toLowerCase())
             .contains(recipientId.trim().toLowerCase()) ||
         value['revoked'] == true ||

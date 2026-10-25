@@ -8,6 +8,7 @@ enum StaffPage {
   schedules,
   sessions,
   notifications,
+  concerns,
   reports,
   settings,
 }
@@ -107,6 +108,7 @@ class AppSidebar extends StatelessWidget {
         Icons.notifications_none_rounded,
       ),
       (StaffPage.reports, 'Reports', Icons.receipt_long_outlined),
+      (StaffPage.concerns, 'Feedback & Concerns', Icons.feedback_outlined),
       (StaffPage.settings, 'Settings', Icons.settings_outlined),
     ];
     return SizedBox(
@@ -125,48 +127,56 @@ class AppSidebar extends StatelessWidget {
               ),
             ),
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  for (final item in items)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 9),
-                      child: Material(
-                        color: page == item.$1
-                            ? StaffTheme.selected
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(26),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(26),
-                          onTap: () => onPage(item.$1),
-                          child: SizedBox(
-                            height: 52,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(item.$3, color: Colors.white, size: 28),
-                                  const SizedBox(width: 15),
-                                  Expanded(
-                                    child: Text(
-                                      item.$2,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Column(
+                    children: [
+                      for (final item in items)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 9),
+                          child: Material(
+                            color: page == item.$1
+                                ? StaffTheme.selected
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(26),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(26),
+                              onTap: () => onPage(item.$1),
+                              child: SizedBox(
+                                height: 52,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
                                   ),
-                                ],
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        item.$3,
+                                        color: Colors.white,
+                                        size: 28,
+                                      ),
+                                      const SizedBox(width: 15),
+                                      Expanded(
+                                        child: Text(
+                                          item.$2,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    ),
-                ],
+                    ],
+                  ),
+                ),
               ),
             ),
             Padding(

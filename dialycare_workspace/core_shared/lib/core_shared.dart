@@ -16,3 +16,6 @@ export 'account_policy.dart';
 export 'session_presentation.dart';
 
 export 'person_avatar.dart';
+export 'feedback_concerns.dart';
+export 'feedback_concerns_page.dart';
+export 'activity_history.dart';

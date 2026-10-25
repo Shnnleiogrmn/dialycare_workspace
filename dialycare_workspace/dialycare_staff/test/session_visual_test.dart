@@ -90,7 +90,7 @@ void main() {
     tester.view.physicalSize = const Size(1920, 1080);
     await tester.pump();
     await tap('Sessions');
-    await tap('Upcoming (7)');
+    await tap('Ongoing (0)');
     await capture('batches-upcoming-abc');
     await tester.ensureVisible(find.byKey(const ValueKey('manage-A1')));
     await tester.tap(find.byKey(const ValueKey('manage-A1')));

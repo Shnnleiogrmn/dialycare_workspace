@@ -47,13 +47,22 @@ class _DialyCareMobileState extends State<DialyCareMobile> {
       scaffoldBackgroundColor: Colors.white,
       navigationBarTheme: NavigationBarThemeData(
         indicatorColor: Colors.transparent,
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? navy
+                : Colors.black54,
+          ),
+        ),
         labelTextStyle: WidgetStateProperty.resolveWith(
           (states) => TextStyle(
             fontSize: 12,
             fontWeight: states.contains(WidgetState.selected)
                 ? FontWeight.bold
                 : FontWeight.normal,
-            color: navy,
+            color: states.contains(WidgetState.selected)
+                ? navy
+                : Colors.black54,
           ),
         ),
       ),
@@ -353,7 +362,9 @@ class _AuthScreenState extends State<AuthScreen> {
       decoration: InputDecoration(
         labelText: label,
         hintText: c == id
-            ? (widget.store.role == 'patient' ? 'DC-000001' : 'R-000001')
+            ? (widget.store.role == 'patient'
+                  ? 'DP-${DateTime.now().year}-001'
+                  : 'R-000001')
             : null,
         helperText: registering && c == password ? mobilePasswordHint : null,
         prefixIcon: Icon(icon),
@@ -599,7 +610,49 @@ class MobileShell extends StatefulWidget {
 class _MobileShellState extends State<MobileShell> {
   int page = 0, filter = 0, notificationFilter = 0;
   MobileStore get s => widget.store;
-  void go(int index) => setState(() => page = index);
+  void go(int index) => setState(() {
+    page = index;
+  });
+  void openSecondary(String title, Widget Function(StateSetter) screen) {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => StatefulBuilder(
+          builder: (context, update) => AnimatedBuilder(
+            animation: s,
+            builder: (context, _) => Scaffold(
+              appBar: AppBar(title: Text(title)),
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    if (s.error != null)
+                      MaterialBanner(
+                        content: Text(s.error!),
+                        actions: [
+                          TextButton(
+                            onPressed: () => s.refresh(),
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: s.refresh,
+                        child: screen(update),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void openNotifications() =>
+      openSecondary('Notifications', (update) => notificationList(update));
   String date(DateTime d) => DateFormat('EEE, MMM d, yyyy').format(d.toLocal());
   String time(DateTime d) => DateFormat('h:mm a').format(d.toLocal());
   Widget badge() => Badge(
@@ -610,12 +663,12 @@ class _MobileShellState extends State<MobileShell> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: const Color(0xfff7fcfd),
-    appBar: page == 0
+    appBar: page != 3
         ? null
         : AppBar(
             centerTitle: true,
             title: Text(
-              ['Home', 'Schedule', 'Notifications', 'More'][page],
+              'More',
               style: const TextStyle(fontWeight: FontWeight.bold, color: navy),
             ),
             backgroundColor: Colors.white,
@@ -635,12 +688,20 @@ class _MobileShellState extends State<MobileShell> {
               ],
             ),
           Expanded(
-            child: RefreshIndicator(
-              onRefresh: s.refresh,
-              child: IndexedStack(
-                index: page,
-                children: [home(), schedule(), notificationList(), profile()],
-              ),
+            child: IndexedStack(
+              index: page,
+              children: [
+                RefreshIndicator(onRefresh: s.refresh, child: home()),
+                if (page == 1)
+                  FeedbackConcernsPage(service: s.concerns)
+                else
+                  const SizedBox(),
+                if (page == 2)
+                  ActivityHistoryPage(service: s.history)
+                else
+                  const SizedBox(),
+                RefreshIndicator(onRefresh: s.refresh, child: profile()),
+              ],
             ),
           ),
         ],
@@ -650,6 +711,15 @@ class _MobileShellState extends State<MobileShell> {
       selectedIndex: page,
       onDestinationSelected: go,
       backgroundColor: Colors.white,
+      labelTextStyle: WidgetStateProperty.resolveWith(
+        (states) => TextStyle(
+          color: states.contains(WidgetState.selected) ? navy : Colors.black54,
+          fontWeight: states.contains(WidgetState.selected)
+              ? FontWeight.bold
+              : FontWeight.normal,
+          fontSize: 12,
+        ),
+      ),
       indicatorColor: Colors.transparent,
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       destinations: [
@@ -659,10 +729,15 @@ class _MobileShellState extends State<MobileShell> {
           label: 'Home',
         ),
         const NavigationDestination(
-          icon: Icon(Icons.calendar_month_outlined),
-          label: 'Schedule',
+          icon: Icon(Icons.feedback_outlined),
+          selectedIcon: Icon(Icons.feedback, color: navy),
+          label: 'Feedback',
         ),
-        NavigationDestination(icon: badge(), label: 'Notifications'),
+        const NavigationDestination(
+          icon: Icon(Icons.history),
+          selectedIcon: Icon(Icons.history, color: navy),
+          label: 'History',
+        ),
         const NavigationDestination(
           icon: Icon(Icons.more_horiz),
           label: 'More',
@@ -732,7 +807,11 @@ class _MobileShellState extends State<MobileShell> {
                 ],
               ),
             ),
-            IconButton(onPressed: () => go(2), icon: badge()),
+            IconButton(
+              tooltip: 'Open notifications',
+              onPressed: openNotifications,
+              icon: badge(),
+            ),
           ],
         ),
         if (s.role == 'relative') ...[
@@ -789,7 +868,8 @@ class _MobileShellState extends State<MobileShell> {
         else
           sessionCard(next),
         FilledButton.icon(
-          onPressed: () => go(1),
+          onPressed: () =>
+              openSecondary('Schedule', (update) => schedule(update)),
           icon: const Icon(Icons.calendar_month_outlined),
           label: const Text('View Schedule'),
         ),
@@ -838,11 +918,11 @@ class _MobileShellState extends State<MobileShell> {
                 overflow: TextOverflow.ellipsis,
               ),
               trailing: const Icon(Icons.chevron_right),
-              onTap: () => go(2),
+              onTap: openNotifications,
             ),
           ),
         TextButton(
-          onPressed: () => go(2),
+          onPressed: openNotifications,
           child: const Text('View Notifications'),
         ),
         if (s.pushNotice != null)
@@ -1064,7 +1144,7 @@ class _MobileShellState extends State<MobileShell> {
       ],
     ),
   );
-  Widget schedule() {
+  Widget schedule([StateSetter? update]) {
     final rows = s.sessions
         .where((v) => filter == 2 || (filter == 0 ? !v.finished : v.finished))
         .toList();
@@ -1074,7 +1154,7 @@ class _MobileShellState extends State<MobileShell> {
         filters(
           ['Upcoming', 'History', 'All'],
           filter,
-          (i) => setState(() => filter = i),
+          (i) => (update ?? setState)(() => filter = i),
         ),
         if (rows.isEmpty)
           empty(
@@ -1113,7 +1193,7 @@ class _MobileShellState extends State<MobileShell> {
     );
   }
 
-  Widget notificationList() {
+  Widget notificationList([StateSetter? update]) {
     const categories = ['All', 'Schedule', 'Session', 'Reminder'];
     final rows = s.notifications
         .where(
@@ -1143,7 +1223,8 @@ class _MobileShellState extends State<MobileShell> {
                 ChoiceChip(
                   label: Text(categories[i]),
                   selected: notificationFilter == i,
-                  onSelected: (_) => setState(() => notificationFilter = i),
+                  onSelected: (_) =>
+                      (update ?? setState)(() => notificationFilter = i),
                 ),
             ],
           ),
@@ -1183,11 +1264,10 @@ class _MobileShellState extends State<MobileShell> {
                     '${notificationCategory(n['type'] as String)} • ${stamp(n)}',
                     style: const TextStyle(fontSize: 12),
                   ),
-                  if (s.role == 'relative')
-                    Text(
-                      '${s.profile!['patientName']} • ${s.profile!['patientId']}',
-                      style: const TextStyle(fontSize: 12),
-                    ),
+                  Text(
+                    '${s.profile!['patientName']} • ${s.profile!['patientId']}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
                 ],
               ),
               trailing: n['readAt'] == null
@@ -1209,10 +1289,9 @@ class _MobileShellState extends State<MobileShell> {
                             '${notificationCategory(n['type'] as String)} • ${stamp(n)}',
                             style: const TextStyle(fontSize: 12),
                           ),
-                          if (s.role == 'relative')
-                            Text(
-                              '${s.profile!['patientName']} • ${s.profile!['patientId']}',
-                            ),
+                          Text(
+                            '${s.profile!['patientName']} • ${s.profile!['patientId']}',
+                          ),
                           const SizedBox(height: 16),
                           Text(n['message'] as String),
                         ],

@@ -15,6 +15,8 @@ Patient _migrateRelativeIds(Patient p) => Patient.fromJson({
   ],
 });
 String notificationTitle(NotificationType type) => switch (type) {
+  NotificationType.concernUpdate => 'Feedback & Concerns',
+  NotificationType.concernSubmitted => 'New Feedback & Concern',
   NotificationType.scheduleReminder => 'Schedule Reminder',
   NotificationType.sessionStarted => 'Session Started',
   NotificationType.sessionPaused => 'Session Paused',
@@ -117,6 +119,14 @@ extension StaffNotificationWorkflow on StaffStore {
           })().toJson(),
         }),
     ];
+    if (old == null &&
+        input.publicId.isNotEmpty &&
+        input.publicId != nextPatientId) {
+      throw const BackendException(
+        'Another Staff member assigned an ID. Refresh and save again.',
+        409,
+      );
+    }
     final legacyId = old == null
         ? 'Not assigned'
         : centerIdLabel(old.id, 'DC-');

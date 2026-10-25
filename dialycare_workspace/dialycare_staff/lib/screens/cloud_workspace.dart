@@ -42,6 +42,8 @@ class _CloudWorkspaceState extends State<CloudWorkspace> {
       late final StaffStore cloud;
       cloud = StaffStore(
         shared: true,
+        concerns: FirestoreConcernService(api),
+        history: FirestoreHistoryService(api),
         saveCenterInformation: api.saveCenterInformation,
         readAuditEvents: api.loadAuditEvents,
         readSessionEvents: api.sessionHistory,

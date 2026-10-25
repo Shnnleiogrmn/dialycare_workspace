@@ -2,7 +2,7 @@
 const {test,before,after}=require('node:test');
 const {readFileSync}=require('node:fs');
 const {initializeTestEnvironment,assertSucceeds,assertFails}=require('@firebase/rules-unit-testing');
-const {doc,setDoc,getDoc,updateDoc,getDocs,collection,query,where,serverTimestamp,writeBatch}=require('firebase/firestore');
+const {doc,setDoc,getDoc,updateDoc,deleteDoc,getDocs,collection,query,where,serverTimestamp,writeBatch,runTransaction}=require('firebase/firestore');
 let env;
 before(async()=>{
  env=await initializeTestEnvironment({projectId:'demo-dialycare-spark',firestore:{host:'127.0.0.1',port:8089,rules:readFileSync('firestore.spark.rules','utf8')}});
@@ -17,6 +17,14 @@ before(async()=>{
 });
 after(async()=>{await env?.cleanup();});
 const db=id=>id?env.authenticatedContext(id).firestore():env.unauthenticatedContext().firestore();
+
+test('unmatched documents remain default-denied for every role',async()=>{
+ for(const who of ['staff','patient','relative','unknown',null]){
+  const ref=doc(db(who),'unmatchedValidation/denied');
+  await assertFails(getDoc(ref));
+  await assertFails(setDoc(ref,{value:'synthetic authorization fixture'}));
+ }
+});
 
 async function transition(ref, patch, options={}) {
  const old=(await getDoc(ref)).data(), revision=(old.revision||0)+1;
@@ -165,8 +173,14 @@ test('archive preserves history, blocks new sessions and permanent deletion, and
 
 test('public ID reservations are immutable, unique and inaccessible to Mobile; counters cannot decrease',async()=>{
  const d=db('staff'),batch=writeBatch(d);
- batch.set(doc(d,'publicIds/DC-000100'),{role:'patient',internalId:'PUBLIC-ID-TEST',publicId:'DC-000100'});
- batch.set(doc(d,'patients/PUBLIC-ID-TEST'),{id:'PUBLIC-ID-TEST',publicId:'DC-000100',name:'Identity verification',recordStatus:'active'});
+ // Existing legacy records remain editable, but new legacy IDs are forbidden.
+ await env.withSecurityRulesDisabled(async c=>{
+  await setDoc(doc(c.firestore(),'publicIds/DC-000100'),{role:'patient',internalId:'PUBLIC-ID-TEST',publicId:'DC-000100'});
+  await setDoc(doc(c.firestore(),'patients/PUBLIC-ID-TEST'),{id:'PUBLIC-ID-TEST',publicId:'DC-000100',name:'Identity verification',recordStatus:'active'});
+ });
+ await assertSucceeds(updateDoc(doc(d,'patients/PUBLIC-ID-TEST'),{name:'Updated legacy record'}));
+ await assertFails(setDoc(doc(d,'publicIds/DC-000101'),{role:'patient',internalId:'LEGACY-NEW',publicId:'DC-000101'}));
+ await assertFails(setDoc(doc(d,'patients/LEGACY-NEW'),{id:'LEGACY-NEW',publicId:'DC-000101',name:'Legacy creation denied'}));
  batch.set(doc(d,'publicIds/R-000100'),{role:'relative',internalId:'PUBLIC-R-ID-TEST',publicId:'R-000100'});
  batch.set(doc(d,'relatives/PUBLIC-R-ID-TEST'),{id:'PUBLIC-R-ID-TEST',publicId:'R-000100',name:'Identity verification',contact:'',address:''});
  batch.set(doc(d,'idCounters/center'),{nextPatientNumber:101,nextRelativeNumber:101});
@@ -218,4 +232,44 @@ test('batch configuration is Center Admin-only and capacity is optional',async()
  await assertSucceeds(getDoc(doc(db('staff'),'batches/CONFIG-A')));
  for(const who of ['staff','patient','relative',null]) await assertFails(setDoc(doc(db(who),'batches/CONFIG-A'),{...data,capacity:10}));
  await assertFails(updateDoc(doc(db('batch-admin'),'batches/CONFIG-A'),{capacity:0}));
+});
+
+test('yearly Patient IDs allocate atomically, reject reuse, and keep Relative IDs unchanged', async()=>{
+ const d=db('staff'), year=new Date().getFullYear(), counter=doc(d,`idCounters/patients-${year}`);
+ const initial=await getDoc(counter), first=initial.exists()?initial.data().nextPatientNumber:1;
+ async function allocate(internalId){
+  return runTransaction(d,async tx=>{
+   const snap=await tx.get(counter), sequence=snap.exists()?snap.data().nextPatientNumber:1;
+   const publicId=`DP-${year}-${String(sequence).padStart(3,'0')}`;
+   tx.set(counter,{year,nextPatientNumber:sequence+1});
+   tx.set(doc(d,'publicIds/'+publicId),{role:'patient',internalId,publicId,year,sequence});
+   tx.set(doc(d,'patients/'+internalId),{id:internalId,publicId,name:'Synthetic concurrency fixture',recordStatus:'active'});
+   return publicId;
+  });
+ }
+ const owners=['YEAR-RACE-A','YEAR-RACE-B'];
+ const outcomes=await Promise.allSettled(owners.map(allocate));
+ if(!outcomes.some(r=>r.status==='fulfilled'))throw Error('No concurrent allocation succeeded.');
+ const ids=[];
+ for(let i=0;i<outcomes.length;i++){
+  const result=outcomes[i];
+  if(result.status==='fulfilled'){ids.push(result.value);continue;}
+  // Rules can reject a stale sequence before the SDK sees an ABORTED conflict.
+  // Retry only this proven race, after a fresh read; other denials must fail.
+  if(!['permission-denied','aborted'].includes(result.reason.code))throw result.reason;
+  if((await getDoc(counter)).data().nextPatientNumber<=first)throw result.reason;
+  ids.push(await allocate(owners[i]));
+ }
+ if(new Set(ids).size!==2)throw Error('Duplicate Patient IDs');
+ const next=(await getDoc(counter)).data().nextPatientNumber;
+ if(next!==first+2)throw Error('Unexpected yearly counter');
+ await assertFails(setDoc(doc(d,'patients/YEAR-REUSE'),{id:'YEAR-REUSE',publicId:ids[0],recordStatus:'active'}));
+ await assertFails(updateDoc(doc(d,'patients/YEAR-RACE-A'),{publicId:`DP-${year}-9999`}));
+ await assertFails(updateDoc(counter,{nextPatientNumber:1}));
+ await assertFails(deleteDoc(doc(d,'publicIds/'+ids[0])));
+ for(const who of ['patient','relative',null])await assertFails(getDoc(doc(db(who),`idCounters/patients-${year}`)));
+ const batch=writeBatch(d), invalid=`DP-${year}-000`;
+ batch.set(doc(d,'publicIds/'+invalid),{role:'patient',internalId:'INVALID-YEAR',publicId:invalid,year,sequence:0});
+ batch.set(doc(d,'patients/INVALID-YEAR'),{id:'INVALID-YEAR',publicId:invalid});
+ await assertFails(batch.commit());
 });

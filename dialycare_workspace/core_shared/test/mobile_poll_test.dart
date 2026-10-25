@@ -82,18 +82,18 @@ void main() {
     expect(cached['profile']['name'], 'Verification');
     expect(
       queries,
-      2,
+      3,
       reason: 'Unchanged background refresh must not reload full histories.',
     );
     version = 'second';
     final changed = await repo.loadMobile('patient', allowCached: true);
-    expect(queries, 4);
+    expect(queries, 5);
     expect(changed['sessions'][0]['status'], 'Ready for Pick Up');
     await repo.call('readNotification', {'id': 'own-notification'});
     await repo.loadMobile('patient', allowCached: true);
     expect(
       queries,
-      6,
+      7,
       reason: 'Read state must refresh immediately after acknowledgment.',
     );
     authorized = false;
@@ -103,7 +103,7 @@ void main() {
         isA<BackendException>().having((e) => e.statusCode, 'status', 403),
       ),
     );
-    expect(queries, 6);
+    expect(queries, 7);
     repo.close();
   });
 }

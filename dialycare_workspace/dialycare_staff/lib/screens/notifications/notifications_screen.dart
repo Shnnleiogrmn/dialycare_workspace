@@ -43,9 +43,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           id: d.id,
           category: d.recipientType == RecipientType.patient
               ? 'Patients'
+              : d.recipientType == RecipientType.staff
+              ? 'System'
               : 'Relatives',
           title: d.title,
-          message: '${d.recipientName}\n${d.message}',
+          message:
+              '${d.recipientName}\nPatient ID: ${widget.store.publicIdFor(d.patientId)}\n${d.message}',
           time: d.createdAt,
           icon: d.type == NotificationType.pickup
               ? 'pickup'
@@ -185,7 +188,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                   if (deliveries[n.id]
                                       case final NotificationDelivery d) ...[
                                     Text(
-                                      '${d.recipientType == RecipientType.patient ? 'Patient' : 'Relative'} • ${d.channelLabel} • ${d.statusLabel}',
+                                      '${d.recipientType == RecipientType.patient
+                                          ? 'Patient'
+                                          : d.recipientType == RecipientType.staff
+                                          ? 'Staff'
+                                          : 'Relative'} • ${d.channelLabel} • ${d.statusLabel}',
                                       style: TextStyle(
                                         fontSize: 11,
                                         color: d.status == DeliveryStatus.failed

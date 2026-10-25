@@ -476,6 +476,14 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () => setState(() => tab = 0),
+            icon: const Icon(Icons.arrow_back),
+            label: const Text('Back to schedules'),
+          ),
+        ),
         Material(
           type: MaterialType.transparency,
           child: SwitchListTile(
@@ -597,15 +605,6 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       const PageHeader('Dialysis Schedule & Batch Management'),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 0),
-        child: SectionTabs(
-          labels: const ['Schedule', '+ Add Schedule'],
-          index: tab,
-          onChanged: (v) => setState(() => tab = v),
-          color: const Color(0xFFDEE6EC),
-        ),
-      ),
       PageBody(
         padding: const EdgeInsets.all(28),
         children: [tab == 0 ? _schedule() : _addSchedule()],

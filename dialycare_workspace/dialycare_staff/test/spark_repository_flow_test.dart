@@ -187,7 +187,10 @@ void main() {
       );
       await store.savePatient(person);
       final createdPatient = staff.data((await staff.get('patients/DC-001'))!);
-      expect(createdPatient['publicId'], 'DC-000001');
+      expect(
+        createdPatient['publicId'],
+        yearlyPatientId(DateTime.now().year, 1),
+      );
       for (final entry in {
         'maritalStatus': 'Married',
         'philHealthNumber': '0000-0000-0000',
@@ -217,7 +220,9 @@ void main() {
         ('relative', relative, relativeAuth, 'REL-001'),
       ]) {
         final role = entry.$1, id = entry.$4;
-        final loginId = role == 'patient' ? 'DC-000001' : 'R-000001';
+        final loginId = role == 'patient'
+            ? yearlyPatientId(DateTime.now().year, 1)
+            : 'R-000001';
         final first = await staff.issueActivation(
           role: role,
           patientId: 'DC-001',
@@ -316,6 +321,41 @@ void main() {
           'Anna Marie',
         );
       }
+      // Simulate a migrated Patient whose historical Auth alias is retained.
+      // Only this disposable emulator identity is changed; UID/password stay put.
+      final retainedUid = patientAuth.uid;
+      final aliasUpdate = await patientAuth.client.post(
+        Uri.parse(
+          'http://$authHost/identitytoolkit.googleapis.com/v1/accounts:update?key=emulator-only-public-key',
+        ),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'idToken': patientAuth.token,
+          'email': accountEmail('patient', 'DC-000001'),
+          'returnSecureToken': true,
+        }),
+      );
+      expect(aliasUpdate.statusCode, 200);
+      patientAuth.token = null;
+      var compatibleLogin = false;
+      for (final candidate in patientLoginIds(
+        'patient',
+        yearlyPatientId(DateTime.now().year, 1),
+      )) {
+        try {
+          await patientAuth.authenticate(
+            'signInWithPassword',
+            accountEmail('patient', candidate),
+            'Owner-pass12!',
+          );
+          compatibleLogin = true;
+          break;
+        } on BackendException {
+          /* Try only the bounded aliases of this identity. */
+        }
+      }
+      expect(compatibleLogin, isTrue);
+      expect(patientAuth.uid, retainedUid);
       await store.refreshShared();
       await expectLater(
         patient.call('mobileData', {'role': 'relative'}),
@@ -477,10 +517,148 @@ void main() {
         relative.get('patientProfiles/UNRELATED'),
         throwsA(isA<BackendException>()),
       );
+      // Exercise the real concern REST repository under Auth/Firestore Rules.
+      final patientConcerns = FirestoreConcernService(patient);
+      final relativeConcerns = FirestoreConcernService(relative);
+      final staffConcerns = FirestoreConcernService(staff);
+      final patientConcernId = newConcernId(),
+          relativeConcernId = newConcernId();
+      await patientConcerns.submit(
+        patientConcernId,
+        'Schedule Concern',
+        'Synthetic schedule question',
+        'First line\nSecond line',
+        'Schedule',
+      );
+      await relativeConcerns.submit(
+        relativeConcernId,
+        'Feedback',
+        'Synthetic feedback',
+        'Original Relative message',
+        'Other',
+      );
+      expect((await patientConcerns.list()).map((c) => c.id), [
+        patientConcernId,
+      ]);
+      expect((await relativeConcerns.list()).map((c) => c.id), [
+        relativeConcernId,
+      ]);
+      await expectLater(
+        relative.get('feedbackConcerns/$patientConcernId'),
+        throwsA(isA<BackendException>()),
+      );
+      var ticket = (await staffConcerns.list()).firstWhere(
+        (c) => c.id == patientConcernId,
+      );
+      expect(ticket.submitter, 'Anna Marie');
+      await staffConcerns.update(
+        ticket,
+        response: 'Your schedule has been reviewed.',
+      );
+      await expectLater(
+        staffConcerns.update(ticket, response: 'Stale reply'),
+        throwsA(isA<BackendException>()),
+      );
+      ticket = (await staffConcerns.list()).firstWhere(
+        (c) => c.id == patientConcernId,
+      );
+      await staffConcerns.update(
+        ticket,
+        response: 'A second response is retained.',
+      );
+      ticket = (await staffConcerns.list()).firstWhere(
+        (c) => c.id == patientConcernId,
+      );
+      expect(
+        (await patientConcerns.responses(ticket)).map((r) => r['message']),
+        ['Your schedule has been reviewed.', 'A second response is retained.'],
+      );
+      await expectLater(
+        relativeConcerns.responses(ticket),
+        throwsA(isA<BackendException>()),
+      );
+      await staffConcerns.update(ticket, status: 'Resolved');
+      ticket = (await staffConcerns.list()).firstWhere(
+        (c) => c.id == patientConcernId,
+      );
+      expect(ticket.values['resolvedAt'], isNotNull);
+      await staffConcerns.update(ticket, status: 'Closed');
+      final own = (await patientConcerns.list()).single;
+      expect(own.status, 'Closed');
+      expect(own.values['message'], 'First line\nSecond line');
+      expect(own.values['closedAt'], isNotNull);
+      expect(
+        ((await patient.loadMobile('patient'))['notifications'] as List).where(
+          (n) => n['type'] == 'concernUpdate',
+        ),
+        hasLength(4),
+      );
+      var relativeTicket = (await staffConcerns.list()).firstWhere(
+        (c) => c.id == relativeConcernId,
+      );
+      await staffConcerns.update(
+        relativeTicket,
+        response: 'Relative feedback reviewed.',
+      );
+      relativeTicket = (await staffConcerns.list()).firstWhere(
+        (c) => c.id == relativeConcernId,
+      );
+      await staffConcerns.update(relativeTicket, status: 'Resolved');
+      expect(
+        (await relativeConcerns.responses(
+          (await relativeConcerns.list()).single,
+        )).single['message'],
+        'Relative feedback reviewed.',
+      );
+      final staffHistory = await FirestoreHistoryService(staff).list();
+      final patientHistory = await FirestoreHistoryService(patient).list();
+      final relativeHistory = await FirestoreHistoryService(relative).list();
+      for (final history in [staffHistory, patientHistory, relativeHistory]) {
+        expect(history.any((e) => e.category == 'Sessions'), isTrue);
+        expect(history.any((e) => e.category == 'Schedule Changes'), isTrue);
+        expect(history.any((e) => e.category == 'Feedback & Concerns'), isTrue);
+        expect(
+          history.every((e) => !e.details.contains('PRIVATE LOCAL NOTE')),
+          isTrue,
+        );
+        expect(
+          history.every(
+            (e) => e.patient.contains(yearlyPatientId(DateTime.now().year, 1)),
+          ),
+          isTrue,
+        );
+      }
+      expect(
+        patientHistory.any((e) => e.title == 'Synthetic feedback'),
+        isFalse,
+      );
+      expect(
+        relativeHistory.any((e) => e.title == 'Synthetic schedule question'),
+        isFalse,
+      );
+      await expectLater(
+        relative.query(
+          'scheduleHistory',
+          field: 'patientId',
+          equals: 'UNRELATED',
+        ),
+        throwsA(isA<BackendException>()),
+      );
+      expect(
+        (await staff.query(
+          'notifications',
+          field: 'recipientKey',
+          equals: 'staff:all',
+        )).length,
+        2,
+      );
       final relativeProfile =
           (await relative.loadMobile('relative'))['profile'] as Map;
       expect(relativeProfile['accountId'], 'R-000001');
-      expect(relativeProfile['patientId'], 'DC-000001');
+      expect(
+        relativeProfile['patientId'],
+        yearlyPatientId(DateTime.now().year, 1),
+      );
       for (final field in [
         'philHealthNumber',
         'heightCm',
@@ -510,6 +688,9 @@ void main() {
         }),
         throwsA(isA<BackendException>()),
       );
+      // Concern updates are independent commits; refresh the displayed inbox
+      // before marking all currently loaded notifications as read.
+      await store.refreshShared();
       final stale = repo('staff');
       addTearDown(stale.close);
       final old = await stale.call('staffData');
@@ -661,7 +842,11 @@ void main() {
       final outbox = await http.get(
         Uri.parse('http://$authHost/emulator/v1/projects/$project/oobCodes'),
       );
-      expect((jsonDecode(outbox.body)['oobCodes'] as List?) ?? [], isEmpty);
+      // The fixture's retained-alias change generates a recovery-email entry.
+      // Activation itself must never send verification or password-reset email.
+      final codes = (jsonDecode(outbox.body)['oobCodes'] as List?) ?? [];
+      expect(codes.length, 1);
+      expect((codes.single as Map)['requestType'], 'RECOVER_EMAIL');
       await expectLater(
         relative.call('mobileData'),
         throwsA(isA<BackendException>()),

@@ -300,6 +300,8 @@ class _PatientFormState extends State<PatientForm> {
           expectedVersion: old == null ? null : openedVersion,
         );
       } on BackendException catch (failure) {
+        final deniedRace =
+            failure is FirestoreFailure && failure.code == 'PERMISSION_DENIED';
         final conflict =
             failure.statusCode == 409 ||
             (failure is FirestoreFailure &&
@@ -308,7 +310,7 @@ class _PatientFormState extends State<PatientForm> {
                   'ABORTED',
                   'ALREADY_EXISTS',
                 ].contains(failure.code));
-        if (old != null || !conflict) rethrow;
+        if (old != null || (!conflict && !deniedRace)) rethrow;
         // A new record can safely obtain another ID; existing Patient edits are
         // never retried over another Staff member's changes.
         await widget.store.refreshShared();
@@ -316,6 +318,10 @@ class _PatientFormState extends State<PatientForm> {
           throw BackendException(widget.store.loadError!);
         }
         final freshId = widget.store.nextPatientId;
+        // Rules may reject a stale reservation before Firestore reports its
+        // precondition conflict. Retry only if an authorized refresh proves that
+        // another registration actually advanced the ID, never on a bare 403.
+        if (deniedRace && freshId == assignedId) rethrow;
         await widget.store.savePatient(
           Patient.fromJson({...p.toJson(), 'id': freshId, 'publicId': freshId}),
         );

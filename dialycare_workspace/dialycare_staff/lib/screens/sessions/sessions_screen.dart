@@ -35,14 +35,19 @@ class _SessionsScreenState extends State<SessionsScreen> {
         .toList();
     final categories = [
       today.where((s) => s.ongoing).toList(),
-      today
-          .where(
-            (s) => s.upcoming && !widget.store.patientFor(s.patientId).archived,
-          )
-          .toList(),
+      nearestUpcomingSessions(
+        widget.store.sessions,
+        widget.day ?? DateTime.now(),
+        eligible: (s) => !widget.store.patientFor(s.patientId).archived,
+      ),
       today.where((s) => s.finished).toList(),
     ];
     final batches = groupSessionsByBatch(categories[tab]);
+    final pendingToday = groupSessionsByBatch(
+      today.where(
+        (s) => s.upcoming && !widget.store.patientFor(s.patientId).archived,
+      ),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -64,21 +69,27 @@ class _SessionsScreenState extends State<SessionsScreen> {
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Builder(
-                  builder: (anchor) => SelectorButton(
-                    width: 240,
-                    label:
-                        '${sameDay(day, DateTime.now()) ? 'Today • ' : ''}${shortDate(day)}',
-                    icon: Icons.calendar_month_outlined,
-                    onPressed: () async {
-                      final date = await chooseDate(anchor, day);
-                      if (date != null && mounted) {
-                        setState(() => day = DateUtils.dateOnly(date));
-                      }
-                    },
+                if (tab == 1 && categories[1].isNotEmpty)
+                  Text(
+                    'Next scheduled date • ${shortDate(categories[1].first.start.toLocal())}',
+                    key: const ValueKey('upcoming-date'),
                   ),
-                ),
-                if (!sameDay(day, DateTime.now()))
+                if (tab != 1)
+                  Builder(
+                    builder: (anchor) => SelectorButton(
+                      width: 240,
+                      label:
+                          '${sameDay(day, DateTime.now()) ? 'Today • ' : ''}${shortDate(day)}',
+                      icon: Icons.calendar_month_outlined,
+                      onPressed: () async {
+                        final date = await chooseDate(anchor, day);
+                        if (date != null && mounted) {
+                          setState(() => day = DateUtils.dateOnly(date));
+                        }
+                      },
+                    ),
+                  ),
+                if (tab != 1 && !sameDay(day, DateTime.now()))
                   TextButton(
                     onPressed: () => setState(
                       () => day = DateUtils.dateOnly(DateTime.now()),
@@ -93,11 +104,13 @@ class _SessionsScreenState extends State<SessionsScreen> {
                 child: Padding(
                   padding: const EdgeInsets.all(30),
                   child: Text(
-                    'No ${tab == 0
-                        ? 'ongoing'
-                        : tab == 1
-                        ? 'upcoming'
-                        : 'finished'} sessions for this date.',
+                    tab == 1
+                        ? 'No upcoming sessions scheduled.'
+                        : 'No ${tab == 0
+                              ? 'ongoing'
+                              : tab == 1
+                              ? 'upcoming'
+                              : 'finished'} sessions for this date.',
                   ),
                 ),
               ),
@@ -108,6 +121,21 @@ class _SessionsScreenState extends State<SessionsScreen> {
                 showProgress: tab == 0,
               ),
               const SizedBox(height: 20),
+            ],
+            if (tab == 0 && pendingToday.isNotEmpty) ...[
+              const Text(
+                'Scheduled for selected date',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              for (final batch in pendingToday) ...[
+                SessionBatchSection(
+                  batch: batch,
+                  store: widget.store,
+                  showProgress: false,
+                ),
+                const SizedBox(height: 20),
+              ],
             ],
           ],
         ),

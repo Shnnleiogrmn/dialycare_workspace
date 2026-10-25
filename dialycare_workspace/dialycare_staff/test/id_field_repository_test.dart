@@ -26,7 +26,10 @@ void main() {
       });
       final bundleA = (await a.loadStaff())['bundle'] as Map<String, dynamic>;
       final bundleB = (await b.loadStaff())['bundle'] as Map<String, dynamic>;
-      final initialNumber = bundleA['nextPatientNumber'] as int;
+      final year = DateTime.now().year;
+      int next(Map bundle) =>
+          (bundle['patientNumbersByYear'] as Map)['$year'] as int;
+      final initialNumber = next(bundleA);
       Map<String, dynamic> person(String id) => Patient(
         id: id,
         name: 'Concurrent verification',
@@ -53,7 +56,7 @@ void main() {
       expect(outcomes.whereType<BackendException>().length, 1);
       final retryId = outcomes[0] == null ? 'ID-RACE-B' : 'ID-RACE-A';
       final refreshed = (await a.loadStaff())['bundle'] as Map<String, dynamic>;
-      expect(refreshed['nextPatientNumber'], initialNumber + 1);
+      expect(next(refreshed), initialNumber + 1);
       (refreshed['patients'] as List).add(person(retryId));
       await a.saveStaff(refreshed);
       final reopened = (await a.loadStaff())['bundle'] as Map<String, dynamic>;
@@ -62,8 +65,8 @@ void main() {
           .where((p) => ['ID-RACE-A', 'ID-RACE-B'].contains(p['id']))
           .toList();
       expect(records.map((p) => p['publicId']).toSet(), {
-        sequentialCenterId('DC-', initialNumber),
-        sequentialCenterId('DC-', initialNumber + 1),
+        yearlyPatientId(year, initialNumber),
+        yearlyPatientId(year, initialNumber + 1),
       });
       final archived = records.first;
       archived['recordStatus'] = 'archived';
@@ -71,7 +74,7 @@ void main() {
       archived['archivedBy'] = null;
       await a.saveStaff(reopened);
       final afterArchive = (await a.loadStaff())['bundle'] as Map;
-      expect(afterArchive['nextPatientNumber'], initialNumber + 2);
+      expect(next(afterArchive), initialNumber + 2);
       expect(await a.get('publicIds/${archived['publicId']}'), isNotNull);
       await expectLater(
         a.request('POST', ':commit', {
